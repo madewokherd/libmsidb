@@ -19,25 +19,27 @@
 
 #include <inttypes.h>
 
-struct MsidbStorage;
+#include "msidb-error.h"
 
-struct MsidbStream;
+typedef struct _MsidbStorage MsidbStorage;
 
-#if 0 /* Not yet implemented */
-MsidbStorage* msidb_storage_open_file(const char *filename, const char *mode);
+typedef struct _MsidbStream MsidbStream;
+
+MsidbStorage* msidb_storage_open_file(const char *filename, const char *mode, MsidbError *err);
 
 void msidb_storage_ref(MsidbStorage *storage);
 
-int msidb_storage_unref(MsidbStorage *storage);
+void msidb_storage_unref(MsidbStorage *storage);
 
-int msidb_storage_close(MsidbStorage *storage);
+void msidb_storage_close(MsidbStorage *storage, MsidbError *err);
 
-int msidb_storage_flush(MsidbStorage *storage);
+void msidb_storage_flush(MsidbStorage *storage, MsidbError *err);
 
+#if 0 /* Not yet implemented */
 typedef struct _msidb_stat {
     char name[96];
     int is_dir;
-    int stream_size;
+    uint64_t stream_size;
     char clsid[16];
     uint32_t state_bits;
     uint64_t ctime; /* Equivalent of a Windows FILETIME */
@@ -51,39 +53,39 @@ typedef struct _msidb_stat {
 #define MSIDB_MODIFY_CTIME          0x00000010
 #define MSIDB_MODIFY_MTIME          0x00000020
 
-int msidb_storage_stat(MsidbStorage *storage, msidb_stat_t *stat);
+int msidb_storage_stat(MsidbStorage *storage, msidb_stat_t *stat, MsidbError *err);
 
-int msidb_storage_stat_item(MsidbStorage *storage, const char *name, msidb_stat_t *stat);
+int msidb_storage_stat_item(MsidbStorage *storage, const char *name, msidb_stat_t *stat, MsidbError *err);
 
-int msidb_storage_modify(MsidbStorage *storage, uint32_t modify_flags, const msidb_stat_t *stat);
+int msidb_storage_modify(MsidbStorage *storage, uint32_t modify_flags, const msidb_stat_t *stat, MsidbError *err);
 
-int msidb_storage_modify_item(MsidbStorage *storage, const char *name, uint32_t modify_flags, const msidb_stat_t *stat);
+int msidb_storage_modify_item(MsidbStorage *storage, const char *name, uint32_t modify_flags, const msidb_stat_t *stat, MsidbError *err);
 
 /* Return 0 to stop enumeration. */
 int (*msidb_storage_enum_children_proc)(MsidbStorage *storage,
     const msidb_stat_t *stat, void *user_data);
 
 int msidb_storage_enum_children(MsidbStorage *storage,
-    msidb_storage_enum_children_proc enum_func);
+    msidb_storage_enum_children_proc enum_func, MsidbError *err);
 
-MsidbStorage* msidb_storage_open_subdir(MsidbStorage *parent, const char *name);
+MsidbStorage* msidb_storage_open_subdir(MsidbStorage *parent, const char *name, MsidbError *err);
 
-MsidbStream* msidb_storage_open_substream(MsidbStorage *parent, const char *name);
+MsidbStream* msidb_storage_open_substream(MsidbStorage *parent, const char *name, MsidbError *err);
 
-int msidb_storage_delete_item(MsidbStorage *storage, const char *name);
+int msidb_storage_delete_item(MsidbStorage *storage, const char *name, MsidbError *err);
 
 void msidb_stream_ref(MsidbStream *stream);
 
 void msidb_stream_unref(MsidbStream *stream);
 
-int msidb_stream_readat(MsidbStream *stream, uint64_t offset, void *buf, size_t count);
+int msidb_stream_readat(MsidbStream *stream, uint64_t offset, void *buf, size_t count, MsidbError *err);
 
-int msidb_stream_writeat(MsidbStream *stream, uint64_t offset, const void *buf, size_t count);
+int msidb_stream_writeat(MsidbStream *stream, uint64_t offset, const void *buf, size_t count, MsidbError *err);
 
-int msidb_stream_stat(MsidbStream *stream, msidb_stat_t *result);
+int msidb_stream_stat(MsidbStream *stream, msidb_stat_t *result, MsidbError *err);
 
-int msidb_stream_modify(MsidbStream *storage, uint32_t modify_flags, const msidb_stat_t *stat);
+int msidb_stream_modify(MsidbStream *storage, uint32_t modify_flags, const msidb_stat_t *stat, MsidbError *err);
 
-int msidb_stream_flush(MsidbStream *stream);
+int msidb_stream_flush(MsidbStream *stream, MsidbError *err);
 #endif
 
