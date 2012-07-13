@@ -17,14 +17,24 @@
     along with libmsidb.  If not, see <http://www.gnu.org/licenses/>.
 */
 
+#include <stdio.h>
+
 #include "storage.h"
 
 /* Just a simple test of storage functionality for now. */
+int enum_children_proc(MsidbStorage *storage, const msidb_stat_t *stat, void *user_data)
+{
+    printf("%s\n", stat->name);
+    return 0;
+}
+
 int main(int argc, char** argv)
 {
     MsidbStorage *storage;
 
     storage = msidb_storage_open_file(argv[1], "r", 0);
+
+    msidb_storage_enum_children(storage, enum_children_proc, NULL, NULL);
 
     msidb_storage_unref(storage);
 

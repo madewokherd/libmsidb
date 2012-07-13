@@ -35,7 +35,6 @@ void msidb_storage_close(MsidbStorage *storage, MsidbError *err);
 
 void msidb_storage_flush(MsidbStorage *storage, MsidbError *err);
 
-#if 0 /* Not yet implemented */
 typedef struct _msidb_stat {
     char name[96];
     int is_dir;
@@ -53,6 +52,7 @@ typedef struct _msidb_stat {
 #define MSIDB_MODIFY_CTIME          0x00000010
 #define MSIDB_MODIFY_MTIME          0x00000020
 
+#if 0 /* Not yet implemented */
 int msidb_storage_stat(MsidbStorage *storage, msidb_stat_t *stat, MsidbError *err);
 
 int msidb_storage_stat_item(MsidbStorage *storage, const char *name, msidb_stat_t *stat, MsidbError *err);
@@ -60,14 +60,16 @@ int msidb_storage_stat_item(MsidbStorage *storage, const char *name, msidb_stat_
 int msidb_storage_modify(MsidbStorage *storage, uint32_t modify_flags, const msidb_stat_t *stat, MsidbError *err);
 
 int msidb_storage_modify_item(MsidbStorage *storage, const char *name, uint32_t modify_flags, const msidb_stat_t *stat, MsidbError *err);
+#endif
 
-/* Return 0 to stop enumeration. */
-int (*msidb_storage_enum_children_proc)(MsidbStorage *storage,
+/* Return non-zero to stop enumeration. */
+typedef int (*msidb_storage_enum_children_proc)(MsidbStorage *storage,
     const msidb_stat_t *stat, void *user_data);
 
 int msidb_storage_enum_children(MsidbStorage *storage,
-    msidb_storage_enum_children_proc enum_func, MsidbError *err);
+    msidb_storage_enum_children_proc enum_func, void *user_data, MsidbError *err);
 
+#if 0 /* Not yet implemented */
 MsidbStorage* msidb_storage_open_subdir(MsidbStorage *parent, const char *name, MsidbError *err);
 
 MsidbStream* msidb_storage_open_substream(MsidbStorage *parent, const char *name, MsidbError *err);
