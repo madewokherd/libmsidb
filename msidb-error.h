@@ -23,7 +23,8 @@ typedef enum _MsidbErrorCode {
     MSIDB_ERROR_HRESULT,
     MSIDB_ERROR_OUTOFMEMORY,
     MSIDB_ERROR_INVALIDDATA,
-    MSIDB_ERROR_INVALIDARG
+    MSIDB_ERROR_INVALIDARG,
+    MSIDB_ERROR_NOTIMPL
 } MsidbErrorCode;
 
 typedef struct _MsidbError {

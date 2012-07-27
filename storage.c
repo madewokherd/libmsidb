@@ -538,7 +538,7 @@ static int encode_utf8_char(uint16_t c, char *outbuf)
 {
     unsigned char *outptr = (unsigned char *) outbuf;
     int base, n;
-    
+
     if (c < 0x80) {
         outptr[0] = c;
         return 1;
@@ -562,10 +562,17 @@ static int encode_utf8_char(uint16_t c, char *outbuf)
 static void fill_msidb_stat(RootStorage *root, const char *dir_entry, msidb_stat_t *st, MsidbError *err)
 {
     int i, j;
+    uint16_t c;
     j=0;
     for (i=0; i<64; i+=2)
     {
-        j += encode_utf8_char(read_uint16(root, &dir_entry[DIRENT_OFS_NAME+i]), &st->name[j]);
+        c = read_uint16(root, &dir_entry[DIRENT_OFS_NAME+i]);
+        if (c >= 0xd800 && c < 0xe000)
+        {
+            msidb_set_error(err, MSIDB_ERROR_NOTIMPL, 0, "UTF-16 sequence in stream name");
+            return;
+        }
+        j += encode_utf8_char(c, &st->name[j]);
         if (st->name[j-1] == 0)
             break;
     }
@@ -576,12 +583,283 @@ static void fill_msidb_stat(RootStorage *root, const char *dir_entry, msidb_stat
         return;
     }
 
-    st->is_dir = dir_entry[DIRENT_OFS_TYPE] == 2 || dir_entry[DIRENT_OFS_TYPE] == 5;
+    st->is_dir = dir_entry[DIRENT_OFS_TYPE] == 1 || dir_entry[DIRENT_OFS_TYPE] == 5;
     st->stream_size = read_uint64(root, &dir_entry[DIRENT_OFS_SIZE]);
     memcpy(&st->clsid, &dir_entry[DIRENT_OFS_CLSID], 16);
     st->state_bits = read_uint32(root, &dir_entry[DIRENT_OFS_STATE]);
     st->ctime = read_uint64(root, &dir_entry[DIRENT_OFS_CTIME]);
     st->mtime = read_uint64(root, &dir_entry[DIRENT_OFS_MTIME]);
+}
+
+static int decode_utf8_char(const char *c, uint16_t *outchar, MsidbError *err)
+{
+    const unsigned char *inptr = (const unsigned char *) c;
+    uint16_t u;
+    int n;
+    
+    u = *inptr;
+    
+    if (u < 0x80) {
+        /* simple ascii case */
+        *outchar = u;
+        return 1;
+    } else if (u < 0xc2) {
+        msidb_set_error(err, MSIDB_ERROR_INVALIDARG, 0, "Bad utf8 sequence");
+        return -1;
+    } else if (u < 0xe0) {
+        u &= 0x1f;
+        n = 2;
+    } else if (u < 0xf0) {
+        u &= 0x0f;
+        n = 3;
+    } else {
+        msidb_set_error(err, MSIDB_ERROR_INVALIDARG, 0, "Bad utf8 sequence");
+        return -1;
+    }
+
+    switch (n) {
+    case 3:
+        u = (u << 6) | (*++inptr ^ 0x80);
+        if ((*inptr & 0xc0) != 0x80)
+        {
+            msidb_set_error(err, MSIDB_ERROR_INVALIDARG, 0, "Bad utf8 sequence");
+            return -1;
+        }
+    case 2:
+        u = (u << 6) | (*++inptr ^ 0x80);
+        if ((*inptr & 0xc0) != 0x80)
+        {
+            msidb_set_error(err, MSIDB_ERROR_INVALIDARG, 0, "Bad utf8 sequence");
+            return -1;
+        }
+    }
+
+    *outchar = u;
+    
+    return n;
+}
+
+static int utf8_name_to_ucs2(const char *name, uint16_t *outbuf, MsidbError *err)
+{
+    int length=0;
+    uint16_t unichr;
+
+    while (*name && length < 31)
+    {
+        if (*name == '/' || *name == '\\' || *name == ':' || *name == '!')
+        {
+            msidb_set_error(err, MSIDB_ERROR_INVALIDARG, 0, "Stream or storage name must not contain the characters: /\\:!");
+            return -1;
+        }
+        name += decode_utf8_char(name, &unichr, err);
+        if (!msidb_check_error(err))
+            return -1;
+        if (unichr >= 0xd800 && unichr < 0xe000)
+        {
+            msidb_set_error(err, MSIDB_ERROR_NOTIMPL, 0, "UTF-16 sequence in stream name");
+            return -1;
+        }
+        outbuf[length] = unichr;
+        length++;
+    }
+
+    if (length == 32)
+    {
+        msidb_set_error(err, MSIDB_ERROR_INVALIDARG, 0, "Stream or storage name too long (must be at most 31 characters)");
+        return -1;
+    }
+
+    outbuf[length] = 0;
+
+    return length;
+}
+
+static uint16_t toupper_ucs2(uint16_t c, MsidbError *err)
+{
+    if (c >= 0x61 && c < 0x7b)
+        return c-0x20;
+
+    /* The MS-CFB spec doesn't make it clear exactly how case conversion should
+     * be handled. Since names inside a storage file aren't normally exposed to
+     * users, this probably doesn't matter. Therefore, for now we fail in any
+     * non-ascii case that might involve a conversion */
+    if (c < 0x2d26)
+    {
+        if (c == 0xaa) goto fail;
+        if (c == 0xb5) goto fail;
+        if (c == 0xba) goto fail;
+        if (c < 0xc0) return c;
+        if (c < 0xd7) goto fail;
+        if (c < 0xd8) return c;
+        if (c < 0xf7) goto fail;
+        if (c < 0xf8) return c;
+        if (c < 0x1bb) goto fail;
+        if (c < 0x1bc) return c;
+        if (c < 0x1c0) goto fail;
+        if (c == 0x1c4) goto fail;
+        if (c < 0x1c6) return c;
+        if (c < 0x1c8) goto fail;
+        if (c < 0x1c9) return c;
+        if (c < 0x1cb) goto fail;
+        if (c < 0x1cc) return c;
+        if (c < 0x1f2) goto fail;
+        if (c < 0x1f3) return c;
+        if (c < 0x294) goto fail;
+        if (c < 0x295) return c;
+        if (c < 0x2b0) goto fail;
+        if (c < 0x370) return c;
+        if (c < 0x374) goto fail;
+        if (c < 0x376) return c;
+        if (c < 0x378) goto fail;
+        if (c < 0x37b) return c;
+        if (c < 0x37e) goto fail;
+        if (c == 0x386) goto fail;
+        if (c < 0x388) return c;
+        if (c < 0x38b) goto fail;
+        if (c == 0x38c) goto fail;
+        if (c < 0x38e) return c;
+        if (c < 0x3a2) goto fail;
+        if (c < 0x3a3) return c;
+        if (c < 0x3f6) goto fail;
+        if (c < 0x3f7) return c;
+        if (c < 0x482) goto fail;
+        if (c < 0x48a) return c;
+        if (c < 0x524) goto fail;
+        if (c < 0x531) return c;
+        if (c < 0x557) goto fail;
+        if (c < 0x561) return c;
+        if (c < 0x588) goto fail;
+        if (c < 0x10a0) return c;
+        if (c < 0x10c6) goto fail;
+        if (c < 0x1d00) return c;
+        if (c < 0x1d2c) goto fail;
+        if (c < 0x1d62) return c;
+        if (c < 0x1d78) goto fail;
+        if (c < 0x1d79) return c;
+        if (c < 0x1d9b) goto fail;
+        if (c < 0x1e00) return c;
+        if (c < 0x1f16) goto fail;
+        if (c < 0x1f18) return c;
+        if (c < 0x1f1e) goto fail;
+        if (c < 0x1f20) return c;
+        if (c < 0x1f46) goto fail;
+        if (c < 0x1f48) return c;
+        if (c < 0x1f4e) goto fail;
+        if (c < 0x1f50) return c;
+        if (c < 0x1f58) goto fail;
+        if (c == 0x1f59) goto fail;
+        if (c == 0x1f5b) goto fail;
+        if (c == 0x1f5d) goto fail;
+        if (c < 0x1f5f) return c;
+        if (c < 0x1f7e) goto fail;
+        if (c < 0x1f80) return c;
+        if (c < 0x1f88) goto fail;
+        if (c < 0x1f90) return c;
+        if (c < 0x1f98) goto fail;
+        if (c < 0x1fa0) return c;
+        if (c < 0x1fa8) goto fail;
+        if (c < 0x1fb0) return c;
+        if (c < 0x1fb5) goto fail;
+        if (c < 0x1fb6) return c;
+        if (c < 0x1fbc) goto fail;
+        if (c == 0x1fbe) goto fail;
+        if (c < 0x1fc2) return c;
+        if (c < 0x1fc5) goto fail;
+        if (c < 0x1fc6) return c;
+        if (c < 0x1fcc) goto fail;
+        if (c < 0x1fd0) return c;
+        if (c < 0x1fd4) goto fail;
+        if (c < 0x1fd6) return c;
+        if (c < 0x1fdc) goto fail;
+        if (c < 0x1fe0) return c;
+        if (c < 0x1fed) goto fail;
+        if (c < 0x1ff2) return c;
+        if (c < 0x1ff5) goto fail;
+        if (c < 0x1ff6) return c;
+        if (c < 0x1ffc) goto fail;
+        if (c == 0x2071) goto fail;
+        if (c == 0x207f) goto fail;
+        if (c == 0x2102) goto fail;
+        if (c == 0x2107) goto fail;
+        if (c < 0x210a) return c;
+        if (c < 0x2114) goto fail;
+        if (c == 0x2115) goto fail;
+        if (c < 0x2119) return c;
+        if (c < 0x211e) goto fail;
+        if (c == 0x2124) goto fail;
+        if (c == 0x2126) goto fail;
+        if (c == 0x2128) goto fail;
+        if (c < 0x212a) return c;
+        if (c < 0x212e) goto fail;
+        if (c < 0x212f) return c;
+        if (c < 0x2135) goto fail;
+        if (c == 0x2139) goto fail;
+        if (c < 0x213c) return c;
+        if (c < 0x2140) goto fail;
+        if (c < 0x2145) return c;
+        if (c < 0x214a) goto fail;
+        if (c == 0x214e) goto fail;
+        if (c < 0x2183) return c;
+        if (c < 0x2185) goto fail;
+        if (c < 0x2c00) return c;
+        if (c < 0x2c2f) goto fail;
+        if (c < 0x2c30) return c;
+        if (c < 0x2c5f) goto fail;
+        if (c < 0x2c60) return c;
+        if (c < 0x2c70) goto fail;
+        if (c < 0x2c71) return c;
+        if (c < 0x2c7d) goto fail;
+        if (c < 0x2c80) return c;
+        if (c < 0x2ce5) goto fail;
+        if (c < 0x2d00) return c;
+        goto fail;
+    }
+    else
+    {
+        if (c < 0xa640) return c;
+        if (c < 0xa660) goto fail;
+        if (c < 0xa662) return c;
+        if (c < 0xa66e) goto fail;
+        if (c < 0xa680) return c;
+        if (c < 0xa698) goto fail;
+        if (c < 0xa722) return c;
+        if (c < 0xa770) goto fail;
+        if (c < 0xa771) return c;
+        if (c < 0xa788) goto fail;
+        if (c < 0xa78b) return c;
+        if (c < 0xa78d) goto fail;
+        if (c < 0xfb00) return c;
+        if (c < 0xfb07) goto fail;
+        if (c < 0xfb13) return c;
+        if (c < 0xfb18) goto fail;
+        if (c < 0xff21) return c;
+        if (c < 0xff3b) goto fail;
+        if (c < 0xff41) return c;
+        if (c < 0xff5b) goto fail;
+        return c;
+    }
+
+fail:
+    msidb_set_error(err, MSIDB_ERROR_NOTIMPL, 0, "Case mapping for non-ascii characters not implemented");
+    return c;
+}
+
+static int name_cmp(RootStorage *root, const uint16_t *name1_upper, int length1,
+    const char *dir_entry2, MsidbError *err)
+{
+    int length2, i;
+    length2 = read_uint16(root, dir_entry2 + DIRENT_OFS_NAME_LENGTH);
+
+    if ((length1*2+2) != length2)
+        return (length1*2+2) - length2;
+
+    for (i=0; i<length1; i++)
+    {
+        int c = name1_upper[i] - toupper_ucs2(read_uint16(root, dir_entry2 + DIRENT_OFS_NAME + 2 * i), err);
+        if (c != 0) return c;
+    }
+
+    return 0;
 }
 
 static int msidb_storage_enum_children_recurse(MsidbStorage *storage,
@@ -638,5 +916,93 @@ int msidb_storage_enum_children(MsidbStorage *storage,
     child = read_uint32(storage->root, &root_dir_entry[DIRENT_OFS_CHILD]);
 
     return msidb_storage_enum_children_recurse(storage, child, enum_func, user_data, err);
+}
+
+enum child_ref {
+    REF_LEFT,
+    REF_RIGHT,
+    REF_DIR
+};
+
+static uint32_t msidb_storage_find_child(MsidbStorage *storage, const char *name,
+    char **dir_entry, uint32_t *ref_sid, enum child_ref *ref_type, MsidbError *err)
+{
+    char *read_dir_entry;
+    uint32_t sid;
+    int length;
+    uint16_t normalized_name[32];
+    int c, i;
+
+    length = utf8_name_to_ucs2(name, normalized_name, err);
+    if (!msidb_check_error(err)) return FREESECT;
+
+    for (i=0; i<length; i++)
+        normalized_name[i] = toupper_ucs2(normalized_name[i], err);
+    if (!msidb_check_error(err)) return FREESECT;
+
+    if (ref_type) *ref_type = REF_DIR;
+    if (ref_sid) *ref_sid = storage->dir_root;
+    read_dir_entry = get_dir_entry(storage->root, storage->dir_root, 0, err);
+    if (!msidb_check_error(err)) return FREESECT;
+
+    sid = read_uint32(storage->root, &read_dir_entry[DIRENT_OFS_CHILD]);
+
+    while (sid != FREESECT)
+    {
+        if (sid > MAXREGSECT)
+        {
+            msidb_set_error(err, MSIDB_ERROR_INVALIDDATA, 0, "Invalid reference in dir table");
+            return FREESECT;
+        }
+
+        read_dir_entry = get_dir_entry(storage->root, sid, 0, err);
+        if (!msidb_check_error(err)) return FREESECT;
+
+        c = name_cmp(storage->root, normalized_name, length, read_dir_entry, err);
+        if (!msidb_check_error(err)) return FREESECT;
+
+        if (c == 0)
+        {
+            if (dir_entry) *dir_entry = read_dir_entry;
+            return sid;
+        }
+        else if (c < 0)
+        {
+            if (ref_type) *ref_type = REF_LEFT;
+            if (ref_sid) *ref_sid = sid;
+            sid = read_uint32(storage->root, &read_dir_entry[DIRENT_OFS_LEFT_SIBLING]);
+        }
+        else if (c > 0)
+        {
+            if (ref_type) *ref_type = REF_RIGHT;
+            if (ref_sid) *ref_sid = sid;
+            sid = read_uint32(storage->root, &read_dir_entry[DIRENT_OFS_RIGHT_SIBLING]);
+        }
+    }
+
+    return FREESECT;
+}
+
+void msidb_storage_stat_item(MsidbStorage *storage, const char *name,
+    msidb_stat_t *stat, int *found, MsidbError *err)
+{
+    char *dir_entry;
+    uint32_t sid;
+
+    *found = 0;
+
+    sid = msidb_storage_find_child(storage, name, &dir_entry, NULL, NULL, err);
+
+    if (msidb_check_error(err))
+    {
+        if (sid != FREESECT)
+        {
+            fill_msidb_stat(storage->root, dir_entry, stat, err);
+            if (msidb_check_error(err))
+                *found = 1;
+        }
+    }
+
+    return;
 }
 

@@ -54,9 +54,11 @@ typedef struct _msidb_stat {
 
 #if 0 /* Not yet implemented */
 int msidb_storage_stat(MsidbStorage *storage, msidb_stat_t *stat, MsidbError *err);
+#endif
 
-int msidb_storage_stat_item(MsidbStorage *storage, const char *name, msidb_stat_t *stat, MsidbError *err);
+void msidb_storage_stat_item(MsidbStorage *storage, const char *name, msidb_stat_t *stat, int *found, MsidbError *err);
 
+#if 0 /* Not yet implemented */
 int msidb_storage_modify(MsidbStorage *storage, uint32_t modify_flags, const msidb_stat_t *stat, MsidbError *err);
 
 int msidb_storage_modify_item(MsidbStorage *storage, const char *name, uint32_t modify_flags, const msidb_stat_t *stat, MsidbError *err);

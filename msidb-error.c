@@ -30,7 +30,8 @@ const char *error_messages[] = {
     NULL, /* MSIDB_ERROR_HRESULT */
     "Out of memory", /* MSIDB_ERROR_OUTOFMEMORY */
     "Invalid storage data", /* MSIDB_ERROR_INVALIDDATA */
-    "Invalid argument" /* MSIDB_ERROR_INVALIDARG */
+    "Invalid argument", /* MSIDB_ERROR_INVALIDARG */
+    "Not implemented" /* MSIDB_ERROR_NOTIMPL */
 };
 
 void msidb_set_error(MsidbError *err, MsidbErrorCode code, unsigned int extra_data, const char *extra_string_data)
