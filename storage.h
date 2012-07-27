@@ -72,18 +72,22 @@ int msidb_storage_enum_children(MsidbStorage *storage,
     msidb_storage_enum_children_proc enum_func, void *user_data, MsidbError *err);
 
 #if 0 /* Not yet implemented */
-MsidbStorage* msidb_storage_open_subdir(MsidbStorage *parent, const char *name, MsidbError *err);
+MsidbStorage* msidb_storage_open_subdir(MsidbStorage *parent, const char *name, int *found, MsidbError *err);
+#endif
 
-MsidbStream* msidb_storage_open_substream(MsidbStorage *parent, const char *name, MsidbError *err);
+MsidbStream* msidb_storage_open_substream(MsidbStorage *parent, const char *name, int *found, MsidbError *err);
 
-int msidb_storage_delete_item(MsidbStorage *storage, const char *name, MsidbError *err);
+#if 0 /* Not yet implemented */
+void msidb_storage_delete_item(MsidbStorage *storage, const char *name, int *found, MsidbError *err);
+#endif
 
 void msidb_stream_ref(MsidbStream *stream);
 
 void msidb_stream_unref(MsidbStream *stream);
 
-int msidb_stream_readat(MsidbStream *stream, uint64_t offset, void *buf, size_t count, MsidbError *err);
+size_t msidb_stream_readat(MsidbStream *stream, uint64_t offset, void *buf, size_t count, MsidbError *err);
 
+#if 0 /* Not yet implemented */
 int msidb_stream_writeat(MsidbStream *stream, uint64_t offset, const void *buf, size_t count, MsidbError *err);
 
 int msidb_stream_stat(MsidbStream *stream, msidb_stat_t *result, MsidbError *err);

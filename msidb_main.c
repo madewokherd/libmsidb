@@ -26,9 +26,11 @@
 int usage(void)
 {
     printf("msidb -l filename\n");
-    printf("    List the items at the top level of the file.\n\n");
+    printf("    List the items at the top level of the storage.\n\n");
     printf("msidb -t filename itemname\n");
-    printf("    Check the type and size of the named item.\n\n");
+    printf("    Check the type and size of the named storage item.\n\n");
+    printf("msidb -b filename itemname\n");
+    printf("    Extract the named stream from the storage.\n\n");
     return 5;
 }
 
@@ -84,6 +86,41 @@ int stat_item(int argc, char** argv)
     return !found;
 }
 
+int extract_item(int argc, char** argv)
+{
+    MsidbStorage *storage;
+    MsidbStream *stream;
+    int found;
+
+    if (argc < 4)
+        return usage();
+
+    storage = msidb_storage_open_file(argv[2], "r", 0);
+
+    stream = msidb_storage_open_substream(storage, argv[3], &found, NULL);
+
+    if (found)
+    {
+        uint64_t ofs=0;
+        int bytesread;
+        char buffer[4096];
+        while ((bytesread = msidb_stream_readat(stream, ofs, buffer, 4096, NULL)) != 0)
+        {
+            fwrite(buffer, 1, bytesread, stdout);
+            ofs += bytesread;
+        }
+    }
+    else
+    {
+        printf("Stream does not exist: %s\n", argv[3]);
+    }
+
+    msidb_stream_unref(stream);
+    msidb_storage_unref(storage);
+
+    return !found;
+}
+
 int main(int argc, char** argv)
 {
     if (argc < 2)
@@ -98,6 +135,8 @@ int main(int argc, char** argv)
             return enum_children(argc, argv);
         case 't':
             return stat_item(argc, argv);
+        case 'b':
+            return extract_item(argc, argv);
         default:
             return usage();
         }

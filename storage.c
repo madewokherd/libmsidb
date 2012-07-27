@@ -47,6 +47,8 @@ typedef struct _RootStorage {
     char header[512];
     int sector_size;
     int fat_sector_length;
+    int mini_sector_size;
+    uint32_t mini_stream_cutoff;
     CachedStream difat;
     CachedStream dir;
     char cached_fat_sector_data[8192];
@@ -98,10 +100,27 @@ typedef struct _RootStorage {
 const char header_magic[] = {0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1};
 
 struct _MsidbStorage {
+    unsigned int ref;
     MsidbStorage *parent;
     RootStorage *root;
-    unsigned int dir_root;
+    uint32_t dir_root;
+    MsidbStream *open_streams;
+};
+
+struct _MsidbStream {
     unsigned int ref;
+    MsidbStorage *parent;
+    uint32_t sid;
+    uint64_t stream_size;
+    char name[96];
+    uint32_t cached_segment;
+    uint32_t cached_segment_index;
+    char *cached_segment_data;
+    int cached_segment_data_valid;
+    char *dir_entry;
+    /* linked list of open streams in parent */
+    MsidbStream **prev;
+    MsidbStream *next;
 };
 
 static int msidb_storage_readat(RootStorage *root, uint64_t offset, void *buf, size_t count, MsidbError *err)
@@ -148,13 +167,13 @@ static uint16_t read_uint16(RootStorage *root, const void *data)
     return le16toh(*(uint16_t*)data);
 }
 
-static uint64_t sector_offset(RootStorage *root, unsigned int sector)
+static uint64_t sector_offset(RootStorage *root, uint32_t sector)
 {
     assert(sector <= MAXREGSECT);
     return ((uint64_t)sector + 1) * root->sector_size;
 }
 
-static char* get_cached_fat_sector(RootStorage *root, unsigned int sector, MsidbError *err)
+static char* get_cached_fat_sector(RootStorage *root, uint32_t sector, MsidbError *err)
 {
     int cache_size = sizeof(root->cached_fat_sector_data) / root->sector_size;
     int i;
@@ -186,7 +205,7 @@ static char* get_cached_fat_sector(RootStorage *root, unsigned int sector, Msidb
     }
 }
 
-static uint32_t sector_get_next(RootStorage *root, unsigned int sector, MsidbError *err)
+static uint32_t sector_get_next(RootStorage *root, uint32_t sector, MsidbError *err)
 {
     uint32_t difat_sector, fat_sector;
     char *fat_block;
@@ -227,7 +246,7 @@ static uint32_t sector_get_next(RootStorage *root, unsigned int sector, MsidbErr
     }
 }
 
-static char* alloc_and_read_sector(RootStorage *root, unsigned int sector, MsidbError *err)
+static char* alloc_and_read_sector(RootStorage *root, uint32_t sector, MsidbError *err)
 {
     char *result;
     int bytesread;
@@ -353,10 +372,24 @@ static void msidb_storage_open(MsidbStorage *storage, MsidbError *err)
 
     storage->root->sector_size = 1 << read_uint32(storage->root, &storage->root->header[HEADER_OFS_SECTOR_SHIFT]);
     storage->root->fat_sector_length = storage->root->sector_size/4;
+    storage->root->mini_sector_size = 1 << read_uint32(storage->root, &storage->root->header[HEADER_OFS_MINI_SECTOR_SHIFT]);
+    storage->root->mini_stream_cutoff = read_uint32(storage->root, &storage->root->header[HEADER_OFS_MINI_STREAM_CUTOFF]);
 
     if (storage->root->sector_size > 4096 || storage->root->sector_size < 512)
     {
         msidb_set_error(err, MSIDB_ERROR_INVALIDDATA, 0, "bad sector shift");
+        return;
+    }
+
+    if (storage->root->mini_sector_size != 64)
+    {
+        msidb_set_error(err, MSIDB_ERROR_INVALIDDATA, 0, "bad mini sector shift");
+        return;
+    }
+
+    if (storage->root->mini_stream_cutoff != 0x1000)
+    {
+        msidb_set_error(err, MSIDB_ERROR_INVALIDDATA, 0, "bad mini sector shift");
         return;
     }
 
@@ -426,6 +459,8 @@ static void msidb_storage_open(MsidbStorage *storage, MsidbError *err)
     storage->root->dir.segments[0].sector = read_uint32(storage->root, &storage->root->header[HEADER_OFS_FIRST_DIR_SECTOR]);
 
     storage->dir_root = 0;
+
+    storage->open_streams = NULL;
 }
 
 void msidb_storage_ref(MsidbStorage *storage)
@@ -1004,5 +1039,191 @@ void msidb_storage_stat_item(MsidbStorage *storage, const char *name,
     }
 
     return;
+}
+
+void msidb_stream_ref(MsidbStream *stream)
+{
+    stream->ref++;
+}
+
+void msidb_stream_unref(MsidbStream *stream)
+{
+    if (--stream->ref == 0)
+    {
+        msidb_storage_unref(stream->parent);
+        free(stream->cached_segment_data);
+        *stream->prev = stream->next;
+        if (stream->next)
+            stream->next->prev = stream->prev;
+        free(stream);
+    }
+}
+
+MsidbStream* msidb_storage_open_substream(MsidbStorage *parent,
+    const char *name, int *found, MsidbError *err)
+{
+    char *dir_entry;
+    uint32_t sid;
+    uint64_t size;
+    MsidbStream *result;
+
+    /* Check if the stream is already open. */
+    result = parent->open_streams;
+    while (result)
+    {
+        if (!strcmp(result->name, name))
+        {
+            msidb_stream_ref(result);
+            return (result);
+        }
+        result = result->next;
+    }
+
+    sid = msidb_storage_find_child(parent, name, &dir_entry, NULL, NULL, err);
+    if (sid == FREESECT || dir_entry[DIRENT_OFS_TYPE] != 2)
+    {
+        *found = 0;
+        return NULL;
+    }
+
+    size = read_uint64(parent->root, &dir_entry[DIRENT_OFS_SIZE]);
+    if (size < parent->root->mini_stream_cutoff)
+    {
+        msidb_set_error(err, MSIDB_ERROR_NOTIMPL, 0, "Opening small streams not implemented");
+        *found = 0;
+        return NULL;
+    }
+
+    result = malloc(sizeof(*result));
+
+    result->ref = 1;
+    result->parent = parent;
+    result->sid = sid;
+    result->stream_size = size;
+    strcpy(result->name, name);
+    result->cached_segment = FREESECT;
+    result->cached_segment_index = FREESECT;
+    result->cached_segment_data = NULL;
+    result->cached_segment_data_valid = 0;
+    result->dir_entry = dir_entry;
+    result->prev = &parent->open_streams;
+    result->next = parent->open_streams;
+    if (result->next)
+        result->next->prev = &result->next;
+    parent->open_streams = result;
+    msidb_storage_ref(parent);
+
+    *found = 1;
+
+    return result;
+}
+
+size_t msidb_stream_readat(MsidbStream *stream, uint64_t offset, void *buf,
+    size_t count, MsidbError *err)
+{
+    if (offset + count > stream->stream_size)
+    {
+        if (stream->stream_size <= offset)
+            return 0;
+        count = stream->stream_size - offset;
+    }
+    else if (count == 0)
+        return 0;
+
+    if (stream->stream_size >= stream->parent->root->mini_stream_cutoff)
+    {
+        uint32_t index, start_index, end_index;
+        char *buf_pos = buf;
+        start_index = offset/stream->parent->root->sector_size;
+        end_index = (offset+count-1)/stream->parent->root->sector_size;
+
+        if (stream->cached_segment_index > start_index)
+        {
+            stream->cached_segment_index = 0;
+            stream->cached_segment = read_uint32(stream->parent->root, &stream->dir_entry[DIRENT_OFS_FIRST_SECTOR]);
+            stream->cached_segment_data_valid = 0;
+        }
+
+        while (stream->cached_segment_index < start_index)
+        {
+            stream->cached_segment_index++;
+            stream->cached_segment = sector_get_next(stream->parent->root, stream->cached_segment, err);
+            if (!msidb_check_error(err))
+                return 0;
+            stream->cached_segment_data_valid = 0;
+        }
+
+        for (index=start_index; index<=end_index; index++)
+        {
+            int block_read_start, block_read_end, bytesread;
+
+            if (index == start_index)
+                block_read_start = offset % stream->parent->root->sector_size;
+            else
+                block_read_start = 0;
+            if (index == end_index)
+                block_read_end = (offset+count-1) % stream->parent->root->sector_size + 1;
+            else
+                block_read_end = stream->parent->root->sector_size;
+
+            if (stream->cached_segment_data_valid)
+            {
+                memcpy(buf_pos, stream->cached_segment_data+block_read_start, block_read_end-block_read_start);
+                buf_pos += block_read_end-block_read_start;
+            }
+            else if (index == end_index && (offset+count) % stream->parent->root->sector_size != 0 &&
+                     offset+count != stream->stream_size)
+            {
+                if (!stream->cached_segment_data)
+                {
+                    stream->cached_segment_data = malloc(stream->parent->root->sector_size);
+                    if (!stream->cached_segment_data)
+                    {
+                        msidb_set_error(err, MSIDB_ERROR_OUTOFMEMORY, 0, NULL);
+                        return 0;
+                    }
+                }
+
+                bytesread = msidb_storage_readat(stream->parent->root,
+                    sector_offset(stream->parent->root, stream->cached_segment),
+                    stream->cached_segment_data, stream->parent->root->sector_size, err);
+                if (bytesread > -1 && bytesread != stream->parent->root->sector_size)
+                    msidb_set_error(err, MSIDB_ERROR_INVALIDDATA, 0, "sector reference past end of file");
+                if (!msidb_check_error(err))
+                    return 0;
+
+                stream->cached_segment_data_valid = 1;
+                memcpy(buf_pos, stream->cached_segment_data+block_read_start, block_read_end-block_read_start);
+                buf_pos += bytesread;
+            }
+            else
+            {
+                bytesread = msidb_storage_readat(stream->parent->root,
+                    sector_offset(stream->parent->root, stream->cached_segment) + block_read_start,
+                    buf_pos, block_read_end-block_read_start, err);
+                if (bytesread > -1 && bytesread != block_read_end-block_read_start)
+                    msidb_set_error(err, MSIDB_ERROR_INVALIDDATA, 0, "sector reference past end of file");
+                if (!msidb_check_error(err))
+                    return 0;
+                buf_pos += bytesread;
+            }
+
+            if (index != end_index)
+            {
+                stream->cached_segment_index++;
+                stream->cached_segment = sector_get_next(stream->parent->root, stream->cached_segment, err);
+                if (!msidb_check_error(err))
+                    return 0;
+                stream->cached_segment_data_valid = 0;
+            }
+        }
+
+        return count;
+    }
+    else
+    {
+        msidb_set_error(err, MSIDB_ERROR_NOTIMPL, 0, "Opening small streams not implemented");
+        return 0;
+    }
 }
 
