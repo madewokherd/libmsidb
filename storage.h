@@ -97,3 +97,27 @@ int msidb_stream_modify(MsidbStream *storage, uint32_t modify_flags, const msidb
 int msidb_stream_flush(MsidbStream *stream, MsidbError *err);
 #endif
 
+/* Stream caching options
+ * Streams in a storage file are managed by linked lists. The best caching
+ * behavior depends on the pattern of how it will be accessed, so rather than
+ * try to guess the pattern, we give the caller the opportunity to tell us. For
+ * that, we provide the following constants:
+ *  STREAM_CACHE_SEQUENTIAL - Optimize for sequential access. This will save a
+ *   pointer into the stream where the last read or write ended. This takes
+ *   constant memory, but it may be slow if each access doesn't start where the
+ *   previous one ended. For reading or writing an entire stream in sequence
+ *   it's best to use blocks of 4096 bytes, and for writing it's always best to
+ *   set the size first.
+ *  STREAM_CACHE_RANDOM - Optimize for random access. This will save the
+ *   location of all the data in the stream, which can take (stream size) / 128
+ *   bytes. This is good for relatively large reads/writes to random areas of
+ *   the stream.
+ *  STREAM_CACHE_FULL - Cache everything. This will take the whole stream size
+ *   and is good for small reads/writes at random offsets in the stream. */
+
+#define STREAM_CACHE_SEQUENTIAL 0
+#define STREAM_CACHE_RANDOM 1
+#define STREAM_CACHE_FULL 2
+
+void msidb_stream_set_cache(MsidbStream *stream, int cache, MsidbError *err);
+
