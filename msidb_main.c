@@ -105,8 +105,6 @@ int extract_item(int argc, char** argv)
         int bytesread;
         char buffer[4096];
 
-        msidb_stream_set_cache(stream, STREAM_CACHE_RANDOM, NULL);
-
         while ((bytesread = msidb_stream_readat(stream, ofs, buffer, 4096, NULL)) != 0)
         {
             fwrite(buffer, 1, bytesread, stdout);

@@ -1304,7 +1304,8 @@ size_t msidb_stream_readat(MsidbStream *stream, uint64_t offset, void *buf,
         start_index = offset/stream->parent->root->sector_size;
         end_index = (offset+count-1)/stream->parent->root->sector_size;
 
-        if (stream->cache_offsets)
+        if (stream->cache_data) {}
+        else if (stream->cache_offsets)
         {
             if (stream->cached_segment_index != start_index)
             {
@@ -1353,7 +1354,16 @@ size_t msidb_stream_readat(MsidbStream *stream, uint64_t offset, void *buf,
             else
                 block_read_end = stream->parent->root->sector_size;
 
-            if (stream->cached_segment_data_valid)
+            if (stream->cache_data)
+            {
+                char *block = get_stream_data(stream->parent->root, &stream->cached_stream,
+                    index, 0, err);
+                if (!block)
+                    return 0;
+                memcpy(buf_pos, block+block_read_start, block_read_end-block_read_start);
+                buf_pos += block_read_end-block_read_start;
+            }
+            else if (stream->cached_segment_data_valid)
             {
                 memcpy(buf_pos, stream->cached_segment_data+block_read_start, block_read_end-block_read_start);
                 buf_pos += block_read_end-block_read_start;
@@ -1395,7 +1405,7 @@ size_t msidb_stream_readat(MsidbStream *stream, uint64_t offset, void *buf,
                 buf_pos += bytesread;
             }
 
-            if (index != end_index)
+            if (index != end_index && !stream->cache_data)
             {
                 stream->cached_segment_index++;
                 if (stream->cache_offsets)
@@ -1420,7 +1430,8 @@ size_t msidb_stream_readat(MsidbStream *stream, uint64_t offset, void *buf,
         start_index = offset/stream->parent->root->mini_sector_size;
         end_index = (offset+count-1)/stream->parent->root->mini_sector_size;
 
-        if (stream->cache_offsets)
+        if (stream->cache_data) {}
+        else if (stream->cache_offsets)
         {
             if (stream->cached_segment_index != start_index)
             {
@@ -1470,7 +1481,16 @@ size_t msidb_stream_readat(MsidbStream *stream, uint64_t offset, void *buf,
             else
                 block_read_end = stream->parent->root->mini_sector_size;
 
-            if (stream->cached_segment_data_valid)
+            if (stream->cache_data)
+            {
+                char *block = get_stream_data(stream->parent->root, &stream->cached_stream,
+                    index, 0, err);
+                if (!block)
+                    return 0;
+                memcpy(buf_pos, block+block_read_start, block_read_end-block_read_start);
+                buf_pos += block_read_end-block_read_start;
+            }
+            else if (stream->cached_segment_data_valid)
             {
                 memcpy(buf_pos, stream->cached_segment_data+block_read_start, block_read_end-block_read_start);
                 buf_pos += block_read_end-block_read_start;
@@ -1519,7 +1539,7 @@ size_t msidb_stream_readat(MsidbStream *stream, uint64_t offset, void *buf,
                 buf_pos += bytesread;
             }
 
-            if (index != end_index)
+            if (index != end_index && !stream->cache_data)
             {
                 stream->cached_segment_index++;
                 if (stream->cache_offsets)
