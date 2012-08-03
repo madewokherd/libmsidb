@@ -31,15 +31,12 @@
 
 #include "storage.h"
 
-typedef struct _CachedSegment {
-    char *data;
-    uint32_t sector;
-} CachedSegment;
-
 typedef struct _CachedStream {
-    CachedSegment *segments;
-    unsigned int segments_len;
-    unsigned int segments_size;
+    uint32_t *sectors;
+    unsigned int sectors_len;
+    unsigned int sectors_size;
+    char **data;
+    unsigned int data_size;
 } CachedStream;
 
 typedef struct _RootStorage {
@@ -221,12 +218,12 @@ static uint32_t sector_get_next(RootStorage *root, uint32_t sector, MsidbError *
     {
         fat_sector -= 109;
         difat_sector = fat_sector / (root->fat_sector_length-1);
-        if (difat_sector >= root->difat.segments_len)
+        if (difat_sector >= root->difat.sectors_len)
         {
             return FREESECT;
         }
         else
-            fat_sector = read_uint32(root, &root->difat.segments[difat_sector].data[4*(fat_sector % (root->fat_sector_length-1))]);
+            fat_sector = read_uint32(root, &root->difat.data[difat_sector][4*(fat_sector % (root->fat_sector_length-1))]);
     }
 
     if (fat_sector == FREESECT)
@@ -276,44 +273,43 @@ static uint32_t stream_index_to_sector(RootStorage *root, CachedStream *stream,
 {
     assert(!expand); /* not implemented yet */
 
-    if (index >= stream->segments_size)
+    if (index >= stream->sectors_size)
     {
         unsigned int new_size;
-        CachedSegment *new_segments;
+        uint32_t *new_sectors;
 
-        assert(stream->segments_size >= 1);
+        assert(stream->sectors_size >= 1);
 
-        if (index+1 > stream->segments_size*2)
+        if (index+1 > stream->sectors_size*2)
             new_size = index+1;
         else
-            new_size = stream->segments_size*2;
-        new_segments = malloc(sizeof(*new_segments) * new_size);
+            new_size = stream->sectors_size*2;
+        new_sectors = malloc(sizeof(*new_sectors) * new_size);
 
-        if (!new_segments)
+        if (!new_sectors)
         {
             msidb_set_error(err, MSIDB_ERROR_OUTOFMEMORY, 0, NULL);
             return FREESECT;
         }
 
-        memcpy(new_segments, stream->segments, sizeof(*new_segments) * stream->segments_len);
-        free(stream->segments);
-        stream->segments = new_segments;
-        stream->segments_size = new_size;
+        memcpy(new_sectors, stream->sectors, sizeof(*new_sectors) * stream->sectors_len);
+        free(stream->sectors);
+        stream->sectors = new_sectors;
+        stream->sectors_size = new_size;
     }
 
-    while (index >= stream->segments_len)
+    while (index >= stream->sectors_len)
     {
-        stream->segments[stream->segments_len].sector = sector_get_next(root,
-            stream->segments[stream->segments_len-1].sector, err);
-        if (stream->segments[stream->segments_len].sector > MAXREGSECT)
+        stream->sectors[stream->sectors_len] = sector_get_next(root,
+            stream->sectors[stream->sectors_len-1], err);
+        if (stream->sectors[stream->sectors_len] > MAXREGSECT)
             msidb_set_error(err, MSIDB_ERROR_INVALIDDATA, 0, "invalid sector reference");
         if (!msidb_check_error(err))
             return FREESECT;
-        stream->segments[stream->segments_len].data = NULL;
-        stream->segments_len++;
+        stream->sectors_len++;
     }
 
-    return stream->segments[index].sector;
+    return stream->sectors[index];
 }
 
 static char* get_stream_data(RootStorage *root, CachedStream *stream,
@@ -326,10 +322,28 @@ static char* get_stream_data(RootStorage *root, CachedStream *stream,
     if (!msidb_check_error(err))
         return NULL;
 
-    if (!stream->segments[index].data)
-        stream->segments[index].data = alloc_and_read_sector(root, sector, err);
+    if (index >= stream->data_size)
+    {
+        char **new_data;
 
-    return stream->segments[index].data;
+        new_data = malloc(sizeof(*new_data) * stream->sectors_size);
+
+        if (!new_data)
+        {
+            msidb_set_error(err, MSIDB_ERROR_OUTOFMEMORY, 0, NULL);
+            return NULL;
+        }
+
+        memcpy(new_data, stream->data, sizeof(*new_data) * stream->data_size);
+        memset(&new_data[stream->data_size], 0, sizeof(*new_data) * (stream->sectors_size - stream->data_size));
+        stream->data = new_data;
+        stream->data_size = stream->sectors_size;
+    }
+
+    if (!stream->data[index])
+        stream->data[index] = alloc_and_read_sector(root, sector, err);
+
+    return stream->data[index];
 }
 
 static char* get_dir_entry(RootStorage *root, uint32_t sid, int expand, MsidbError *err)
@@ -396,33 +410,47 @@ static void msidb_storage_open(MsidbStorage *storage, MsidbError *err)
     memset(storage->root->cached_fat_sector, 0xff, sizeof(storage->root->cached_fat_sector));
 
     /* read DIFAT */
-    storage->root->difat.segments_len = read_uint32(storage->root, &storage->root->header[HEADER_OFS_DIFAT_SECTOR_COUNT]);
+    storage->root->difat.sectors_len = read_uint32(storage->root, &storage->root->header[HEADER_OFS_DIFAT_SECTOR_COUNT]);
 
-    storage->root->difat.segments = malloc(sizeof(*storage->root->difat.segments) * storage->root->difat.segments_len);
-    if (!storage->root->difat.segments)
+    if (storage->root->difat.sectors_len)
     {
-        msidb_set_error(err, MSIDB_ERROR_OUTOFMEMORY, 0, NULL);
-        return;
+        storage->root->difat.sectors = malloc(sizeof(*storage->root->difat.sectors) * storage->root->difat.sectors_len);
+        if (!storage->root->difat.sectors)
+        {
+            msidb_set_error(err, MSIDB_ERROR_OUTOFMEMORY, 0, NULL);
+            return;
+        }
+
+        memset(storage->root->difat.sectors, 0, sizeof(*storage->root->difat.sectors) * storage->root->difat.sectors_len);
+
+        storage->root->difat.data_size = storage->root->difat.sectors_len;
+
+        storage->root->difat.data = malloc(sizeof(*storage->root->difat.data) * storage->root->difat.data_size);
+        if (!storage->root->difat.data)
+        {
+            msidb_set_error(err, MSIDB_ERROR_OUTOFMEMORY, 0, NULL);
+            return;
+        }
+
+        memset(storage->root->difat.data, 0, sizeof(*storage->root->difat.data) * storage->root->difat.data_size);
     }
 
-    memset(storage->root->difat.segments, 0, sizeof(*storage->root->difat.segments) * storage->root->difat.segments_len);
-
-    storage->root->difat.segments_size = storage->root->difat.segments_len;
+    storage->root->difat.sectors_size = storage->root->difat.sectors_len;
 
     sector = read_uint32(storage->root, &storage->root->header[HEADER_OFS_FIRST_DIFAT_SECTOR]);
-    for (i=0; i < storage->root->difat.segments_len; i++)
+    for (i=0; i < storage->root->difat.sectors_len; i++)
     {
         if (sector > MAXREGSECT)
         {
             msidb_set_error(err, MSIDB_ERROR_INVALIDDATA, 0, "DIFAT is smaller than header claims");
             return;
         }
-        storage->root->difat.segments[i].sector = sector;
-        storage->root->difat.segments[i].data = alloc_and_read_sector(storage->root, sector, err);
+        storage->root->difat.sectors[i] = sector;
+        storage->root->difat.data[i] = alloc_and_read_sector(storage->root, sector, err);
         if (!msidb_check_error(err))
             return;
 
-        sector = read_uint32(storage->root, &storage->root->difat.segments[i].data[storage->root->sector_size-4]);
+        sector = read_uint32(storage->root, &storage->root->difat.data[i][storage->root->sector_size-4]);
     }
 
     if (sector <= MAXREGSECT)
@@ -433,30 +461,30 @@ static void msidb_storage_open(MsidbStorage *storage, MsidbError *err)
 
     /* read DIR */
     if (storage->root->sector_size == 512)
-        storage->root->dir.segments_size = 16;
+        storage->root->dir.sectors_size = 16;
     else
     {
-        storage->root->dir.segments_size = read_uint32(storage->root, &storage->root->header[HEADER_OFS_DIR_SECTOR_COUNT]);
+        storage->root->dir.sectors_size = read_uint32(storage->root, &storage->root->header[HEADER_OFS_DIR_SECTOR_COUNT]);
 
-        if (!storage->root->dir.segments_size)
+        if (!storage->root->dir.sectors_size)
         {
             msidb_set_error(err, MSIDB_ERROR_INVALIDDATA, 0, "header claims no DIR segments");
             return;
         }
     }
 
-    storage->root->dir.segments = malloc(sizeof(*storage->root->dir.segments) * storage->root->dir.segments_size);
-    if (!storage->root->dir.segments)
+    storage->root->dir.sectors = malloc(sizeof(*storage->root->dir.sectors) * storage->root->dir.sectors_size);
+    if (!storage->root->dir.sectors)
     {
         msidb_set_error(err, MSIDB_ERROR_OUTOFMEMORY, 0, NULL);
         return;
     }
 
-    memset(storage->root->dir.segments, 0, sizeof(*storage->root->dir.segments) * storage->root->dir.segments_size);
+    memset(storage->root->dir.sectors, 0, sizeof(*storage->root->dir.sectors) * storage->root->dir.sectors_size);
 
-    storage->root->dir.segments_len = 1;
+    storage->root->dir.sectors_len = 1;
 
-    storage->root->dir.segments[0].sector = read_uint32(storage->root, &storage->root->header[HEADER_OFS_FIRST_DIR_SECTOR]);
+    storage->root->dir.sectors[0] = read_uint32(storage->root, &storage->root->header[HEADER_OFS_FIRST_DIR_SECTOR]);
 
     storage->dir_root = 0;
 
@@ -490,11 +518,12 @@ void msidb_storage_close(MsidbStorage *storage, MsidbError *err)
 static void free_cached_stream(CachedStream *cached_stream)
 {
     unsigned int i;
-    if (cached_stream->segments)
+    if (cached_stream->sectors)
     {
-        for (i=0; i<cached_stream->segments_len; i++)
-            free(cached_stream->segments[i].data);
-        free(cached_stream->segments);
+        for (i=0; i<cached_stream->data_size; i++)
+            free(cached_stream->data[i]);
+        free(cached_stream->data);
+        free(cached_stream->sectors);
     }
 }
 
