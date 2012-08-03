@@ -109,13 +109,14 @@ int extract_item(int argc, char** argv)
             fwrite(buffer, 1, bytesread, stdout);
             ofs += bytesread;
         }
+
+        msidb_stream_unref(stream);
     }
     else
     {
         printf("Stream does not exist: %s\n", argv[3]);
     }
 
-    msidb_stream_unref(stream);
     msidb_storage_unref(storage);
 
     return !found;

@@ -45,9 +45,13 @@ typedef struct _RootStorage {
     int sector_size;
     int fat_sector_length;
     int mini_sector_size;
+    int mini_sector_blocks;
     uint32_t mini_stream_cutoff;
     CachedStream difat;
     CachedStream dir;
+    CachedStream minifat;
+    CachedStream mini;
+    char *root_dir_entry;
     char cached_fat_sector_data[8192];
     uint32_t cached_fat_sector[16];
     int cached_fat_sector_to_evict;
@@ -162,6 +166,18 @@ static uint32_t read_uint32(RootStorage *root, const void *data)
 static uint16_t read_uint16(RootStorage *root, const void *data)
 {
     return le16toh(*(uint16_t*)data);
+}
+
+static uint64_t read_uint64_trunc(RootStorage *root, const void *data)
+{
+    uint64_t result;
+    /* According to MS-CFB, some old broken implementations write random data
+     * to the upper 32 bits of the size field on directory entries, and it
+     * suggests ignoring those bits for old storage versions. */
+    result = read_uint64(root, data);
+    if (root->sector_size == 512)
+        result &= 0xffffffff;
+    return result;
 }
 
 static uint64_t sector_offset(RootStorage *root, uint32_t sector)
@@ -387,6 +403,7 @@ static void msidb_storage_open(MsidbStorage *storage, MsidbError *err)
     storage->root->sector_size = 1 << read_uint32(storage->root, &storage->root->header[HEADER_OFS_SECTOR_SHIFT]);
     storage->root->fat_sector_length = storage->root->sector_size/4;
     storage->root->mini_sector_size = 1 << read_uint32(storage->root, &storage->root->header[HEADER_OFS_MINI_SECTOR_SHIFT]);
+    storage->root->mini_sector_blocks = storage->root->sector_size / storage->root->mini_sector_size;
     storage->root->mini_stream_cutoff = read_uint32(storage->root, &storage->root->header[HEADER_OFS_MINI_STREAM_CUTOFF]);
 
     if (storage->root->sector_size > 4096 || storage->root->sector_size < 512)
@@ -486,6 +503,49 @@ static void msidb_storage_open(MsidbStorage *storage, MsidbError *err)
 
     storage->root->dir.sectors[0] = read_uint32(storage->root, &storage->root->header[HEADER_OFS_FIRST_DIR_SECTOR]);
 
+    /* read root dir entry */
+    storage->root->root_dir_entry = get_dir_entry(storage->root, 0, 0, err);
+    if (!storage->root->root_dir_entry)
+        return;
+
+    /* read MINIFAT */
+    storage->root->minifat.sectors_size = read_uint32(storage->root, &storage->root->header[HEADER_OFS_MINIFAT_SECTOR_COUNT]);
+
+    if (storage->root->minifat.sectors_size)
+    {
+        storage->root->minifat.sectors = malloc(sizeof(*storage->root->minifat.sectors) * storage->root->minifat.sectors_size);
+        if (!storage->root->minifat.sectors)
+        {
+            msidb_set_error(err, MSIDB_ERROR_OUTOFMEMORY, 0, NULL);
+            return;
+        }
+
+        memset(storage->root->minifat.sectors, 0, sizeof(*storage->root->minifat.sectors) * storage->root->minifat.sectors_size);
+
+        storage->root->minifat.sectors_len = 1;
+
+        storage->root->minifat.sectors[0] = read_uint32(storage->root, &storage->root->header[HEADER_OFS_FIRST_MINIFAT_SECTOR]);
+    }
+
+    /* read MINI stream */
+    storage->root->mini.sectors_size = (read_uint64_trunc(storage->root, &storage->root->root_dir_entry[DIRENT_OFS_SIZE]) + storage->root->sector_size - 1) / storage->root->sector_size;
+
+    if (storage->root->mini.sectors_size)
+    {
+        storage->root->mini.sectors = malloc(sizeof(*storage->root->mini.sectors) * storage->root->mini.sectors_size);
+        if (!storage->root->mini.sectors)
+        {
+            msidb_set_error(err, MSIDB_ERROR_OUTOFMEMORY, 0, NULL);
+            return;
+        }
+
+        memset(storage->root->mini.sectors, 0, sizeof(*storage->root->mini.sectors) * storage->root->mini.sectors_size);
+
+        storage->root->mini.sectors_len = 1;
+
+        storage->root->mini.sectors[0] = read_uint32(storage->root, &storage->root->root_dir_entry[DIRENT_OFS_FIRST_SECTOR]);
+    }
+
     storage->dir_root = 0;
 
     storage->open_streams = NULL;
@@ -539,6 +599,8 @@ static void msidb_storage_free(MsidbStorage *storage)
             close(storage->root->fd);
         free_cached_stream(&storage->root->difat);
         free_cached_stream(&storage->root->dir);
+        free_cached_stream(&storage->root->minifat);
+        free_cached_stream(&storage->root->mini);
         free(storage->root);
         free(storage);
     }
@@ -648,7 +710,7 @@ static void fill_msidb_stat(RootStorage *root, const char *dir_entry, msidb_stat
     }
 
     st->is_dir = dir_entry[DIRENT_OFS_TYPE] == 1 || dir_entry[DIRENT_OFS_TYPE] == 5;
-    st->stream_size = read_uint64(root, &dir_entry[DIRENT_OFS_SIZE]);
+    st->stream_size = read_uint64_trunc(root, &dir_entry[DIRENT_OFS_SIZE]);
     memcpy(&st->clsid, &dir_entry[DIRENT_OFS_CLSID], 16);
     st->state_bits = read_uint32(root, &dir_entry[DIRENT_OFS_STATE]);
     st->ctime = read_uint64(root, &dir_entry[DIRENT_OFS_CTIME]);
@@ -1115,13 +1177,7 @@ MsidbStream* msidb_storage_open_substream(MsidbStorage *parent,
         return NULL;
     }
 
-    size = read_uint64(parent->root, &dir_entry[DIRENT_OFS_SIZE]);
-    if (size < parent->root->mini_stream_cutoff)
-    {
-        msidb_set_error(err, MSIDB_ERROR_NOTIMPL, 0, "Opening small streams not implemented");
-        *found = 0;
-        return NULL;
-    }
+    size = read_uint64_trunc(parent->root, &dir_entry[DIRENT_OFS_SIZE]);
 
     result = malloc(sizeof(*result));
 
@@ -1145,6 +1201,39 @@ MsidbStream* msidb_storage_open_substream(MsidbStorage *parent,
     *found = 1;
 
     return result;
+}
+
+static uint32_t mini_sector_get_next(RootStorage *root, uint32_t mini_sector, MsidbError *err)
+{
+    uint32_t minifat_sector;
+    char *minifat_block;
+
+    minifat_sector = mini_sector / root->fat_sector_length;
+
+    minifat_block = get_stream_data(root, &root->minifat, minifat_sector, 0, err);
+
+    if (!msidb_check_error(err))
+    {
+        return INVALIDSECT;
+    }
+    else
+    {
+        return read_uint32(root, &minifat_block[(mini_sector % root->fat_sector_length) * 4]);
+    }
+}
+
+static uint64_t mini_sector_offset(RootStorage *root, uint32_t mini_sector, MsidbError *err)
+{
+    uint32_t mini_index;
+    uint64_t mini_stream_block_ofs;
+
+    assert(mini_sector <= MAXREGSECT);
+
+    mini_index = mini_sector / root->mini_sector_blocks;
+
+    mini_stream_block_ofs = sector_offset(root, stream_index_to_sector(root, &root->mini, mini_index, 0, err));
+
+    return mini_stream_block_ofs + root->mini_sector_size * (mini_sector % root->mini_sector_blocks);
 }
 
 size_t msidb_stream_readat(MsidbStream *stream, uint64_t offset, void *buf,
@@ -1178,7 +1267,10 @@ size_t msidb_stream_readat(MsidbStream *stream, uint64_t offset, void *buf,
             stream->cached_segment_index++;
             stream->cached_segment = sector_get_next(stream->parent->root, stream->cached_segment, err);
             if (!msidb_check_error(err))
+            {
+                stream->cached_segment_index = FREESECT;
                 return 0;
+            }
             stream->cached_segment_data_valid = 0;
         }
 
@@ -1242,7 +1334,10 @@ size_t msidb_stream_readat(MsidbStream *stream, uint64_t offset, void *buf,
                 stream->cached_segment_index++;
                 stream->cached_segment = sector_get_next(stream->parent->root, stream->cached_segment, err);
                 if (!msidb_check_error(err))
+                {
+                    stream->cached_segment_index = FREESECT;
                     return 0;
+                }
                 stream->cached_segment_data_valid = 0;
             }
         }
@@ -1251,8 +1346,107 @@ size_t msidb_stream_readat(MsidbStream *stream, uint64_t offset, void *buf,
     }
     else
     {
-        msidb_set_error(err, MSIDB_ERROR_NOTIMPL, 0, "Opening small streams not implemented");
-        return 0;
+        uint32_t index, start_index, end_index;
+        char *buf_pos = buf;
+        start_index = offset/stream->parent->root->mini_sector_size;
+        end_index = (offset+count-1)/stream->parent->root->mini_sector_size;
+
+        if (stream->cached_segment_index > start_index)
+        {
+            stream->cached_segment_index = 0;
+            stream->cached_segment = read_uint32(stream->parent->root, &stream->dir_entry[DIRENT_OFS_FIRST_SECTOR]);
+            stream->cached_segment_data_valid = 0;
+        }
+
+        while (stream->cached_segment_index < start_index)
+        {
+            stream->cached_segment_index++;
+            stream->cached_segment = mini_sector_get_next(stream->parent->root, stream->cached_segment, err);
+            if (!msidb_check_error(err))
+            {
+                stream->cached_segment_index = FREESECT;
+                return 0;
+            }
+            stream->cached_segment_data_valid = 0;
+        }
+
+        for (index=start_index; index<=end_index; index++)
+        {
+            int block_read_start, block_read_end, bytesread;
+            uint64_t ofs;
+
+            if (index == start_index)
+                block_read_start = offset % stream->parent->root->mini_sector_size;
+            else
+                block_read_start = 0;
+            if (index == end_index)
+                block_read_end = (offset+count-1) % stream->parent->root->mini_sector_size + 1;
+            else
+                block_read_end = stream->parent->root->mini_sector_size;
+
+            if (stream->cached_segment_data_valid)
+            {
+                memcpy(buf_pos, stream->cached_segment_data+block_read_start, block_read_end-block_read_start);
+                buf_pos += block_read_end-block_read_start;
+            }
+            else if (index == end_index && (offset+count) % stream->parent->root->mini_sector_size != 0 &&
+                     offset+count != stream->stream_size)
+            {
+                if (!stream->cached_segment_data)
+                {
+                    stream->cached_segment_data = malloc(stream->parent->root->mini_sector_size);
+                    if (!stream->cached_segment_data)
+                    {
+                        msidb_set_error(err, MSIDB_ERROR_OUTOFMEMORY, 0, NULL);
+                        return 0;
+                    }
+                }
+
+                ofs = mini_sector_offset(stream->parent->root, stream->cached_segment, err);
+                if (!msidb_check_error(err))
+                    return 0;
+
+                bytesread = msidb_storage_readat(stream->parent->root,
+                    ofs, stream->cached_segment_data, stream->parent->root->mini_sector_size, err);
+                if (bytesread > -1 && bytesread != stream->parent->root->mini_sector_size)
+                    msidb_set_error(err, MSIDB_ERROR_INVALIDDATA, 0, "sector reference past end of file");
+                if (!msidb_check_error(err))
+                    return 0;
+
+                stream->cached_segment_data_valid = 1;
+                memcpy(buf_pos, stream->cached_segment_data+block_read_start, block_read_end-block_read_start);
+                buf_pos += bytesread;
+            }
+            else
+            {
+                ofs = mini_sector_offset(stream->parent->root, stream->cached_segment, err);
+                if (!msidb_check_error(err))
+                    return 0;
+
+                bytesread = msidb_storage_readat(stream->parent->root,
+                    ofs + block_read_start,
+                    buf_pos, block_read_end-block_read_start, err);
+                if (bytesread > -1 && bytesread != block_read_end-block_read_start)
+                    msidb_set_error(err, MSIDB_ERROR_INVALIDDATA, 0, "sector reference past end of file");
+                if (!msidb_check_error(err))
+                    return 0;
+                buf_pos += bytesread;
+            }
+
+            if (index != end_index)
+            {
+                stream->cached_segment_index++;
+                stream->cached_segment = mini_sector_get_next(stream->parent->root, stream->cached_segment, err);
+                if (!msidb_check_error(err))
+                {
+                    stream->cached_segment_index = FREESECT;
+                    return 0;
+                }
+                stream->cached_segment_data_valid = 0;
+            }
+        }
+
+        return count;
     }
 }
 
