@@ -1192,6 +1192,7 @@ void msidb_stream_unref(MsidbStream *stream)
         *stream->prev = stream->next;
         if (stream->next)
             stream->next->prev = stream->prev;
+        free_cached_stream(&stream->cached_stream);
         free(stream);
     }
 }
