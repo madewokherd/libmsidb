@@ -25,11 +25,11 @@
 
 int usage(void)
 {
-    printf("msidb -l filename\n");
+    printf("storage -l filename\n");
     printf("    List the items at the top level of the storage.\n\n");
-    printf("msidb -t filename itemname\n");
+    printf("storage -t filename itemname\n");
     printf("    Check the type and size of the named storage item.\n\n");
-    printf("msidb -b filename itemname\n");
+    printf("storage -b filename itemname\n");
     printf("    Extract the named stream from the storage.\n\n");
     return 5;
 }
