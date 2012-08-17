@@ -48,6 +48,8 @@ void msidb_set_error(MsidbError *err, MsidbErrorCode code, unsigned int extra_da
             fprintf(stderr, "%s", strerror(extra_data));
         else if (code == MSIDB_ERROR_HRESULT)
             fprintf(stderr, "COM ERROR %x", extra_data);
+        else if (extra_data != 0)
+            fprintf(stderr, "%s (%x)", error_messages[code], extra_data);
         else
             fprintf(stderr, "%s", error_messages[code]);
         if (extra_string_data)

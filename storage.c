@@ -1287,6 +1287,11 @@ static uint64_t mini_sector_offset(RootStorage *root, uint32_t mini_sector, Msid
     return mini_stream_block_ofs + root->mini_sector_size * (mini_sector % root->mini_sector_blocks);
 }
 
+void msidb_stream_stat(MsidbStream *stream, msidb_stat_t *result, MsidbError *err)
+{
+    fill_msidb_stat(stream->parent->root, stream->dir_entry, result, err);
+}
+
 size_t msidb_stream_readat(MsidbStream *stream, uint64_t offset, void *buf,
     size_t count, MsidbError *err)
 {

@@ -18,10 +18,43 @@
 */
 
 #include <sys/types.h>
+#include <errno.h>
+#include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
+
+#include <iconv.h>
 
 #include "msidb.h"
 #include "msidb-private.h"
+
+struct known_codepage {
+    uint32_t cp_constant;
+    const char *cp_name;
+};
+
+struct known_codepage known_codepages[] = 
+{
+    {0, "ASCII"}, /* CP_ACP - Anything non-ascii would depend on the environment. */
+    {1, "ASCII"}, /* CP_OEMCP - Anything non-ascii would depend on the environment. */
+    {65000, "UTF7"},
+    {65001, "UTF8"},
+    {}
+};
+
+typedef struct _StringTableEntry {
+    uint32_t refcount;
+    uint32_t len;
+    char *data;
+} StringTableEntry;
+
+typedef struct _StringTable {
+    StringTableEntry *entries;
+    size_t entries_size;
+    size_t entries_len;
+    int strref_size;
+    const char *codepage;
+} StringTable;
 
 struct _MsidbDatabase {
     unsigned int ref;
@@ -29,6 +62,7 @@ struct _MsidbDatabase {
     int shared_storage;
     MsidbStream *stringpool_stream;
     MsidbStream *stringdata_stream;
+    StringTable stringtable;
 };
 
 static int16_t utf2mime(uint16_t x)
@@ -99,15 +133,203 @@ static MsidbStream* open_stream(MsidbStorage *parent, const char *decoded_name, 
     if (!msidb_check_error(err))
         return NULL;
 
-    printf("%s\n", encoded_name);
-
     return msidb_storage_open_substream(parent, encoded_name, found, err);
+}
+
+static uint32_t read_uint(const void *data, int size)
+{
+    const unsigned char *d = data;
+    uint32_t result = 0;
+    int shift = 0;
+    while (size)
+    {
+        result = result | *d << shift;
+        d++;
+        size--;
+        shift+=8;
+    }
+    return result;
+}
+
+static void free_stringtable(StringTable *stringtable)
+{
+    int i;
+    for (i=0; i<stringtable->entries_len; i++)
+        free(stringtable->entries[i].data);
+    free(stringtable->entries);
+}
+
+static void read_stringtable(MsidbStream *stringpool, MsidbStream *stringdata, StringTable *stringtable, MsidbError *err)
+{
+    msidb_stat_t st;
+    uint64_t poolsize, data_offset = 0;
+    char pool_entry[4];
+    char static_input_buffer[4096];
+    char *dyn_input_buffer = NULL;
+    char *input_buffer = static_input_buffer;
+    size_t input_buffer_size = sizeof(static_input_buffer);
+    char static_output_buffer[4096];
+    char *dyn_output_buffer = NULL;
+    char *output_buffer = static_output_buffer;
+    size_t output_buffer_size = sizeof(static_output_buffer);
+    size_t bytesread, inbytesleft, outbytesleft;
+    char *in, *out;
+    uint32_t codepage;
+    int i;
+    int num_entries = 0;
+    iconv_t cd;
+
+    msidb_stream_stat(stringpool, &st, err);
+    poolsize = st.stream_size;
+    if (!msidb_check_error(err)) return;
+
+    if (poolsize < 4)
+    {
+        msidb_set_error(err, MSIDB_ERROR_INVALIDDATA, 0, "missing _StringPool header");
+        return;
+    }
+
+    /* read header */
+    msidb_stream_readat(stringpool, 0, pool_entry, 4, err);
+    if (!msidb_check_error(err)) return;
+
+    codepage = read_uint(pool_entry, 4);
+
+    stringtable->strref_size = (codepage & 0x80000000) ? 3 : 2;
+
+    codepage &= 0x7fffffff;
+
+    for (i=0; known_codepages[i].cp_name; i++)
+    {
+        if (known_codepages[i].cp_constant == codepage)
+        {
+            stringtable->codepage = known_codepages[i].cp_name;
+            break;
+        }
+    }
+
+    if (!known_codepages[i].cp_name)
+    {
+        msidb_set_error(err, MSIDB_ERROR_NOTIMPL, codepage, "unknown codepage constant");
+        return;
+    }
+
+    num_entries = poolsize / 4;
+
+    stringtable->entries = malloc(num_entries * sizeof(StringTableEntry));
+
+    if (!stringtable->entries)
+    {
+        msidb_set_error(err, MSIDB_ERROR_OUTOFMEMORY, 0, NULL);
+        return;
+    }
+
+    stringtable->entries_size = stringtable->entries_len = num_entries;
+
+    memset(stringtable->entries, 0, num_entries * sizeof(StringTableEntry));
+
+    cd = iconv_open("UTF8", stringtable->codepage);
+    if (cd == (iconv_t)-1)
+    {
+        free(stringtable->entries);
+        msidb_set_os_error(err, "iconv_open() failed when reading string table");
+        return;
+    }
+
+    for (i=1; i<num_entries; i++)
+    {
+        msidb_stream_readat(stringpool, 4 * i, pool_entry, 4, err);
+        if (!msidb_check_error(err)) break;
+
+        stringtable->entries[i].len = read_uint(pool_entry, 2);
+        stringtable->entries[i].refcount = read_uint(pool_entry+2, 2);
+
+        if (!stringtable->entries[i].len)
+            /* unused entry or overflow */
+            continue;
+
+        if (!stringtable->entries[i-1].len && stringtable->entries[i-1].refcount)
+            /* previous entry contains the top bits of this entry's length */
+            stringtable->entries[i].len += stringtable->entries[i-1].refcount << 16;
+
+        if (input_buffer_size < stringtable->entries[i].len)
+        {
+            input_buffer_size = stringtable->entries[i].len * 2;
+            free(dyn_input_buffer);
+            input_buffer = dyn_input_buffer = malloc(input_buffer_size);
+            if (!dyn_input_buffer)
+            {
+                msidb_set_error(err, MSIDB_ERROR_OUTOFMEMORY, 0, NULL);
+                break;
+            }
+        }
+
+        bytesread = msidb_stream_readat(stringdata, data_offset, input_buffer, stringtable->entries[i].len, err);
+        if (!msidb_check_error(err)) break;
+        if (bytesread != stringtable->entries[i].len)
+        {
+            msidb_set_error(err, MSIDB_ERROR_INVALIDDATA, 0, "too short _StringData stream");
+            break;
+        }
+
+        while (1)
+        {
+            in = input_buffer;
+            out = output_buffer;
+            inbytesleft = stringtable->entries[i].len;
+            outbytesleft = output_buffer_size;
+
+            iconv(cd, NULL, NULL, NULL, NULL);
+
+            if (iconv(cd, &in, &inbytesleft, &out, &outbytesleft) != (size_t)-1)
+                break;
+
+            if (errno != E2BIG)
+            {
+                msidb_set_os_error(err, "iconv() failed when reading string table");
+                break;
+            }
+
+            output_buffer_size = output_buffer_size + inbytesleft * 3;
+            free(dyn_output_buffer);
+            output_buffer = dyn_output_buffer = malloc(output_buffer_size);
+            if (!dyn_output_buffer)
+            {
+                msidb_set_error(err, MSIDB_ERROR_OUTOFMEMORY, 0, NULL);
+                break;
+            }
+        }
+
+        if (!msidb_check_error(err))
+            break;
+
+        data_offset += stringtable->entries[i].len;
+
+        stringtable->entries[i].len = output_buffer_size - outbytesleft;
+        stringtable->entries[i].data = malloc(stringtable->entries[i].len + 1);
+        if (!stringtable->entries[i].data)
+        {
+            msidb_set_error(err, MSIDB_ERROR_OUTOFMEMORY, 0, NULL);
+            break;
+        }
+        memcpy(stringtable->entries[i].data, output_buffer, stringtable->entries[i].len);
+        stringtable->entries[i].data[stringtable->entries[i].len] = 0;
+        printf("%s %i\n", stringtable->entries[i].data, stringtable->entries[i].refcount);
+    }
+
+    free(dyn_input_buffer);
+    free(dyn_output_buffer);
+    iconv_close(cd);
+
+    if (!msidb_check_error(err))
+        free_stringtable(stringtable);
 }
 
 MsidbDatabase* msidb_database_open_storage(MsidbStorage *storage, const char *mode, int shared_storage, MsidbError *err)
 {
     MsidbDatabase *result;
     MsidbStream *stringpool, *stringdata;
+    StringTable stringtable;
     int found;
 
     stringpool = open_stream(storage, "_StringPool", 1, &found, err);
@@ -127,6 +349,14 @@ MsidbDatabase* msidb_database_open_storage(MsidbStorage *storage, const char *mo
         return NULL;
     }
 
+    read_stringtable(stringpool, stringdata, &stringtable, err);
+    if (!msidb_check_error(err))
+    {
+        msidb_stream_unref(stringpool);
+        msidb_stream_unref(stringdata);
+        return NULL;
+    }
+
     result = malloc(sizeof(*result));
     if (!result)
     {
@@ -142,6 +372,7 @@ MsidbDatabase* msidb_database_open_storage(MsidbStorage *storage, const char *mo
     result->shared_storage = shared_storage;
     result->stringpool_stream = stringpool;
     result->stringdata_stream = stringdata;
+    result->stringtable = stringtable;
 
     return result;
 }
@@ -182,6 +413,7 @@ void msidb_database_unref(MsidbDatabase *database)
         msidb_storage_unref(database->storage);
         msidb_stream_unref(database->stringpool_stream);
         msidb_stream_unref(database->stringdata_stream);
+        free_stringtable(&database->stringtable);
         free(database);
     }
 }
