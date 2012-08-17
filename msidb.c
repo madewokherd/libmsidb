@@ -35,8 +35,8 @@ struct known_codepage {
 
 struct known_codepage known_codepages[] = 
 {
-    {0, "ASCII"}, /* CP_ACP - Anything non-ascii would depend on the environment. */
-    {1, "ASCII"}, /* CP_OEMCP - Anything non-ascii would depend on the environment. */
+    {0, "WINDOWS-1252"}, /* CP_ACP */
+    {1, "WINDOWS-1252"}, /* CP_OEMCP */
     {1250, "WINDOWS-1250"},
     {1251, "WINDOWS-1251"},
     {1252, "WINDOWS-1252"},
