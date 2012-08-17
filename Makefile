@@ -1,14 +1,17 @@
 CFLAGS=-Wall -g
 
-LIB_OBJECTS=msidb-error.o storage.o
+STORAGE_OBJECTS=msidb-error.o storage.o storage_main.o
 
-MSIDB_OBJECTS=msidb_main.o
+MSIDB_OBJECTS=msidb-error.o storage.o msidb.o msidb_main.o
 
-storage: $(LIB_OBJECTS) $(MSIDB_OBJECTS)
-	$(CC) $(LDFLAGS) $(LIB_OBJECTS) $(MSIDB_OBJECTS) -o storage
+all: msidb storage
 
-all: msidb
+storage: $(LIB_OBJECTS) $(STORAGE_OBJECTS)
+	$(CC) $(LDFLAGS) $(LIB_OBJECTS) $(STORAGE_OBJECTS) -o storage
+
+msidb: $(LIB_OBJECTS) $(MSIDB_OBJECTS)
+	$(CC) $(LDFLAGS) $(LIB_OBJECTS) $(MSIDB_OBJECTS) -o msidb
 
 clean:
-	rm -f $(LIB_OBJECTS) $(MSIDB_OBJECTS) storage
+	rm -f $(LIB_OBJECTS) $(MSIDB_OBJECTS) storage msidb
 

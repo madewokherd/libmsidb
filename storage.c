@@ -30,6 +30,7 @@
 #include <assert.h>
 
 #include "storage.h"
+#include "msidb-private.h"
 
 typedef struct _CachedStream {
     uint32_t *sectors;
@@ -706,7 +707,7 @@ MsidbStorage* msidb_storage_open_file(const char *filename, const char *mode, Ms
     }
 }
 
-static int encode_utf8_char(uint16_t c, char *outbuf)
+int encode_utf8_char(uint16_t c, char *outbuf)
 {
     unsigned char *outptr = (unsigned char *) outbuf;
     int base, n;
@@ -763,7 +764,7 @@ static void fill_msidb_stat(RootStorage *root, const char *dir_entry, msidb_stat
     st->mtime = read_uint64(root, &dir_entry[DIRENT_OFS_MTIME]);
 }
 
-static int decode_utf8_char(const char *c, uint16_t *outchar, MsidbError *err)
+int decode_utf8_char(const char *c, uint16_t *outchar, MsidbError *err)
 {
     const unsigned char *inptr = (const unsigned char *) c;
     uint16_t u;
