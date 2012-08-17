@@ -37,6 +37,15 @@ struct known_codepage known_codepages[] =
 {
     {0, "ASCII"}, /* CP_ACP - Anything non-ascii would depend on the environment. */
     {1, "ASCII"}, /* CP_OEMCP - Anything non-ascii would depend on the environment. */
+    {1250, "WINDOWS-1250"},
+    {1251, "WINDOWS-1251"},
+    {1252, "WINDOWS-1252"},
+    {1253, "WINDOWS-1253"},
+    {1254, "WINDOWS-1254"},
+    {1255, "WINDOWS-1255"},
+    {1256, "WINDOWS-1256"},
+    {1257, "WINDOWS-1257"},
+    {1258, "WINDOWS-1258"},
     {65000, "UTF7"},
     {65001, "UTF8"},
     {}
