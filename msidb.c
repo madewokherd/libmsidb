@@ -352,6 +352,18 @@ static void read_stringtable(MsidbStream *stringpool, MsidbStream *stringdata, S
         free_stringtable(stringtable);
 }
 
+const char *msidb_database_get_interned_string(MsidbDatabase *database,
+    uint32_t id, int *found)
+{
+    *found = 0;
+
+    if (!id || id >= database->stringtable.entries_len)
+        return NULL;
+
+    *found = database->stringtable.entries[id].data != NULL;
+    return database->stringtable.entries[id].data;
+}
+
 static void free_msidb_table(MsidbTable *table)
 {
     int i;
@@ -512,6 +524,30 @@ void msidb_table_load_data(MsidbTable *table, MsidbError *err)
 
         table->data = rows;
     }
+}
+
+uint32_t msidb_database_num_tables(MsidbDatabase *database, MsidbError *err)
+{
+    return database->tablestable.num_rows;
+}
+
+const char* msidb_database_nth_table_name(MsidbDatabase *database, uint32_t index, MsidbError *err)
+{
+    const char *result;
+    int found;
+
+    if (index >= database->tablestable.num_rows)
+    {
+        msidb_set_error(err, MSIDB_ERROR_INVALIDARG, 0, "table index out of range");
+        return NULL;
+    }
+
+    result = msidb_database_get_interned_string(database, database->tablestable.data[index][0], &found);
+
+    if (!found)
+        msidb_set_error(err, MSIDB_ERROR_INVALIDDATA, 0, "invalid string reference in _Tables");
+
+    return result;
 }
 
 MsidbDatabase* msidb_database_open_storage(MsidbStorage *storage, const char *mode, int shared_storage, MsidbError *err)

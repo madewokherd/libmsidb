@@ -34,11 +34,17 @@ int usage(void)
 int export_tables(int argc, char** argv)
 {
     MsidbDatabase *database;
+    int i, num_tables;
 
     if (argc < 3)
         return usage();
 
     database = msidb_database_open_file(argv[2], "r", NULL);
+
+    num_tables = msidb_database_num_tables(database, NULL);
+
+    for (i=0; i<num_tables; i++)
+        printf("%s\n", msidb_database_nth_table_name(database, i, NULL));
 
     msidb_database_unref(database);
 

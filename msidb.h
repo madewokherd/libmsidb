@@ -38,11 +38,13 @@ void msidb_database_commit(MsidbDatabase *database, MsidbError *err);
 
 void msidb_database_import_table(MsidbDatabase *database, const char *filename,
     MsidbError *err);
+#endif
 
 uint32_t msidb_database_num_tables(MsidbDatabase *database, MsidbError *err);
 
 const char* msidb_database_nth_table_name(MsidbDatabase *database, uint32_t index, MsidbError *err);
 
+#if 0
 MsidbStream* msidb_database_open_stream(MsidbDatabase *database, const char *name, int *found, MsidbError *err);
 
 MsidbStorage* msidb_database_get_storage_ref(MsidbDatabase *database);
@@ -101,11 +103,16 @@ void msidb_table_delete_row(MsidbTable *table, const uint32_t *values,
 
 void msidb_table_export(MsidbTable *table, const char *filename,
     MsidbError *err);
+#endif
 
-int32_t msidb_database_intern_string(MsidbDatabase *database, const char *value,
+const char *msidb_database_get_interned_string(MsidbDatabase *database,
+    uint32_t id, int *found);
+
+#if 0
+uint32_t msidb_database_intern_string(MsidbDatabase *database, const char *value,
     int create, int *found, MsidbError *err);
 
-void msidb_database_unref_interned_string(MsidbDatabase *database, int32_t id,
+void msidb_database_unref_interned_string(MsidbDatabase *database, uint32_t id,
     MsidbError *err);
 #endif
 
