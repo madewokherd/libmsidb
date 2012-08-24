@@ -58,6 +58,7 @@ uint32_t msidb_table_get_num_columns(MsidbTable *table, MsidbError *err);
 const char* msidb_table_get_column_name(MsidbTable *table, uint32_t index, MsidbError *err);
 
 uint32_t msidb_table_get_column_type(MsidbTable *table, uint32_t index, MsidbError *err);
+#endif
 
 #define MSIDB_COLTYPE_DATASIZEMASK 0x00ff
 #define MSIDB_COLTYPE_VALID 0x0100
@@ -68,6 +69,7 @@ uint32_t msidb_table_get_column_type(MsidbTable *table, uint32_t index, MsidbErr
 #define MSIDB_COLTYPE_TEMPORARY 0x4000
 #define MSIDB_COLTYPE_UNKNOWN 0x8000
 
+#if 0 /* not yet implemented */
 char* msidb_table_get_column_type_string(MsidbTable *table, uint32_t index, MsidbError *err);
 
 uint32_t msidb_table_get_num_rows(MsidbTable *table, MsidbError *err);

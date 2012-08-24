@@ -65,6 +65,24 @@ typedef struct _StringTable {
     const char *codepage;
 } StringTable;
 
+static const char tables_name[] = "_Tables";
+static const char table_colname[] = "Table";
+static const char *tables_columns[1] = {table_colname};
+static uint32_t tables_types[1] = {MSIDB_COLTYPE_VALID | MSIDB_COLTYPE_STRING | MSIDB_COLTYPE_KEY | 64};
+
+struct _MsidbTable {
+    unsigned int ref;
+    MsidbDatabase *parent;
+    unsigned int builtin;
+    const char *table_name;
+    MsidbStream *stream;
+    unsigned int num_columns;
+    const char **column_names;
+    uint32_t *column_types;
+    unsigned int num_rows;
+    uint32_t **data;
+};
+
 struct _MsidbDatabase {
     unsigned int ref;
     MsidbStorage *storage;
@@ -72,6 +90,7 @@ struct _MsidbDatabase {
     MsidbStream *stringpool_stream;
     MsidbStream *stringdata_stream;
     StringTable stringtable;
+    MsidbTable tablestable;
 };
 
 static int16_t utf2mime(uint16_t x)
@@ -323,7 +342,6 @@ static void read_stringtable(MsidbStream *stringpool, MsidbStream *stringdata, S
         }
         memcpy(stringtable->entries[i].data, output_buffer, stringtable->entries[i].len);
         stringtable->entries[i].data[stringtable->entries[i].len] = 0;
-        printf("%s %i\n", stringtable->entries[i].data, stringtable->entries[i].refcount);
     }
 
     free(dyn_input_buffer);
@@ -332,6 +350,168 @@ static void read_stringtable(MsidbStream *stringpool, MsidbStream *stringdata, S
 
     if (!msidb_check_error(err))
         free_stringtable(stringtable);
+}
+
+static void free_msidb_table(MsidbTable *table)
+{
+    int i;
+    if (table->stream)
+        msidb_stream_unref(table->stream);
+    if (table->data)
+    {
+        for (i=0; i<table->num_rows; i++)
+            free(table->data[i]);
+        free(table->data);
+    }
+    if (!table->builtin)
+    {
+        msidb_database_unref(table->parent);
+        free(table->column_names);
+        free(table->column_types);
+        free(table);
+    }
+}
+
+void msidb_table_ref(MsidbTable *table)
+{
+    if (table->builtin)
+        msidb_database_ref(table->parent);
+    else
+        table->ref++;
+}
+
+void msidb_table_unref(MsidbTable *table)
+{
+    if (table->builtin)
+        msidb_database_unref(table->parent);
+    else if (!--table->ref)
+        free_msidb_table(table);
+}
+
+static int column_type_to_disksize(MsidbDatabase *database, uint32_t type)
+{
+    if ((type & ~MSIDB_COLTYPE_NULLABLE) == (MSIDB_COLTYPE_STRING|MSIDB_COLTYPE_VALID))
+        return 2;
+
+    if (type & MSIDB_COLTYPE_STRING)
+        return database->stringtable.strref_size;
+
+    if ((type & MSIDB_COLTYPE_DATASIZEMASK) <= 2)
+        return 2;
+
+    if ((type & MSIDB_COLTYPE_DATASIZEMASK) == 4)
+        return 4;
+
+    return -1; /* invalid type */
+}
+
+int msidb_table_row_size(MsidbTable *table, MsidbError *err)
+{
+    int result=0;
+    int i, size;
+
+    for (i=0; i<table->num_columns; i++)
+    {
+        size = column_type_to_disksize(table->parent, table->column_types[i]);
+        if (size == -1)
+        {
+            msidb_set_error(err, MSIDB_ERROR_INVALIDDATA, table->column_types[i], "bad column type");
+            return -1;
+        }
+        result += size;
+    }
+
+    return result;
+}
+
+void msidb_table_load_data(MsidbTable *table, MsidbError *err)
+{
+    int row_size;
+    msidb_stat_t st;
+
+    if (!table->stream)
+    {
+        int found;
+        table->stream = open_stream(table->parent->storage, table->table_name,
+            1, &found, err);
+        if (!msidb_check_error(err) || !found)
+        {
+            if (msidb_check_error(err))
+                msidb_set_error(err, MSIDB_ERROR_INVALIDDATA, 0, "missing table stream");
+            return;
+        }
+    }
+
+    row_size = msidb_table_row_size(table, err);
+    if (!msidb_check_error(err))
+        return;
+
+    msidb_stream_stat(table->stream, &st, err);
+    if (!msidb_check_error(err))
+        return;
+
+    table->num_rows = st.stream_size / row_size;
+
+    if (table->num_rows)
+    {
+        char *row_data;
+        uint32_t **rows;
+        uint32_t *row;
+        int i, j;
+        int column_offset;
+        int column_size;
+
+        row_data = malloc(row_size);
+        if (!row_data)
+        {
+            msidb_set_error(err, MSIDB_ERROR_OUTOFMEMORY, 0, NULL);
+            return;
+        }
+
+        rows = malloc(table->num_rows * sizeof(*rows));
+        if (!rows)
+        {
+            free(row_data);
+            msidb_set_error(err, MSIDB_ERROR_OUTOFMEMORY, 0, NULL);
+            return;
+        }
+
+        for (i=0; i<table->num_rows; i++)
+        {
+            msidb_stream_readat(table->stream, (uint64_t)i * row_size, row_data, row_size, err);
+            if (!msidb_check_error(err))
+                break;
+
+            row = malloc(sizeof(uint32_t) * table->num_columns);
+            if (!row)
+            {
+                msidb_set_error(err, MSIDB_ERROR_OUTOFMEMORY, 0, NULL);
+                break;
+            }
+
+            column_offset = 0;
+            for (j=0; j<table->num_columns; j++)
+            {
+                column_size = column_type_to_disksize(table->parent, table->column_types[j]);
+                row[j] = read_uint(row_data + column_offset, column_size);
+                column_offset += column_size;
+            }
+
+            rows[i] = row;
+        }
+
+        free(row_data);
+
+        if (!msidb_check_error(err))
+        {
+            for (j=0; j<i; j++)
+                free(rows[j]);
+            free(rows);
+            return;
+        }
+
+        table->data = rows;
+    }
 }
 
 MsidbDatabase* msidb_database_open_storage(MsidbStorage *storage, const char *mode, int shared_storage, MsidbError *err)
@@ -382,6 +562,25 @@ MsidbDatabase* msidb_database_open_storage(MsidbStorage *storage, const char *mo
     result->stringpool_stream = stringpool;
     result->stringdata_stream = stringdata;
     result->stringtable = stringtable;
+
+    memset(&result->tablestable, 0, sizeof(result->tablestable));
+    result->tablestable.parent = result;
+    result->tablestable.builtin = 1;
+    result->tablestable.table_name = tables_name;
+    result->tablestable.num_columns = 1;
+    result->tablestable.column_names = tables_columns;
+    result->tablestable.column_types = tables_types;
+    msidb_table_load_data(&result->tablestable, err);
+    if (!msidb_check_error(err))
+    {
+        free_msidb_table(&result->tablestable);
+        msidb_storage_unref(result->storage);
+        msidb_stream_unref(stringpool);
+        msidb_stream_unref(stringdata);
+        free_stringtable(&result->stringtable);
+        free(result);
+        return NULL;
+    }
 
     return result;
 }
