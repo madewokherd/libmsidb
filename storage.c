@@ -151,6 +151,8 @@ static int msidb_storage_readat(RootStorage *root, uint64_t offset, void *buf, s
             msidb_set_os_error(err, NULL);
             return -1;
         }
+        else if (bytes_read == 0)
+            break;
         total_bytes_read += bytes_read;
         count -= bytes_read;
         buf = ((char*)buf) + bytes_read;
