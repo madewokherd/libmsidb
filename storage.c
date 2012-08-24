@@ -1365,6 +1365,8 @@ size_t msidb_stream_readat(MsidbStream *stream, uint64_t offset, void *buf,
 
             if (stream->cache_data)
             {
+                /* FIXME: get_stream_data may fail for the last block in the file
+                 * if it's a partial block. */
                 char *block = get_stream_data(stream->parent->root, &stream->cached_stream,
                     index, 0, err);
                 if (!block)
@@ -1380,6 +1382,8 @@ size_t msidb_stream_readat(MsidbStream *stream, uint64_t offset, void *buf,
             else if (index == end_index && (offset+count) % stream->parent->root->sector_size != 0 &&
                      offset+count != stream->stream_size)
             {
+                uint64_t bytestoread;
+
                 if (!stream->cached_segment_data)
                 {
                     stream->cached_segment_data = malloc(stream->parent->root->sector_size);
@@ -1390,10 +1394,16 @@ size_t msidb_stream_readat(MsidbStream *stream, uint64_t offset, void *buf,
                     }
                 }
 
+                /* If this is the last block in the stream, the file may not be
+                 * large enough for the "extra" bytes in the block. */
+                bytestoread = stream->stream_size - index * stream->parent->root->sector_size;
+                if (bytestoread > stream->parent->root->sector_size)
+                    bytestoread = stream->parent->root->sector_size;
+
                 bytesread = msidb_storage_readat(stream->parent->root,
                     sector_offset(stream->parent->root, stream->cached_segment),
-                    stream->cached_segment_data, stream->parent->root->sector_size, err);
-                if (bytesread > -1 && bytesread != stream->parent->root->sector_size)
+                    stream->cached_segment_data, bytestoread, err);
+                if (bytesread > -1 && bytesread != bytestoread)
                     msidb_set_error(err, MSIDB_ERROR_INVALIDDATA, 0, "sector reference past end of file");
                 if (!msidb_check_error(err))
                     return 0;
