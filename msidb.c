@@ -537,6 +537,68 @@ static void msidb_table_load_data(MsidbTable *table, MsidbError *err)
     }
 }
 
+static int table_row_cmp(MsidbTable *table, const uint32_t *a,
+    const uint32_t *b)
+{
+    int i;
+    for (i=0; i<table->num_columns; i++)
+    {
+        if (table->column_types[i] & MSIDB_COLTYPE_KEY)
+        {
+            if (a[i] < b[i])
+                return -1;
+            if (a[i] > b[i])
+                return 1;
+        }
+    }
+    return 0;
+}
+
+uint32_t msidb_table_find_row(MsidbTable *table, const uint32_t *values,
+    int num_values, int *found, MsidbError *err)
+{
+    int low, high;
+    int i, cmp;
+
+    *found = 0;
+
+    low = 0;
+    high = table->num_rows-1;
+
+    /* make sure we were given a value for all key fields */
+    for (i=num_values; i<table->num_columns; i++)
+    {
+        if (table->column_types[i] & MSIDB_COLTYPE_KEY)
+        {
+            msidb_set_error(err, MSIDB_ERROR_INVALIDARG, 0, "msidb_table_find_row called without values for all key columns");
+            return NULL;
+        }
+    }
+
+    while (low <= high)
+    {
+        i = (low + high) / 2;
+        cmp = table_row_cmp(table, table->data[i], values);
+
+        if (cmp == 0)
+        {
+            *found = 1;
+            low = i;
+            break;
+        }
+        else if (cmp == -1)
+        {
+            low = i+1;
+        }
+        else if (cmp == 1)
+        {
+            high = i-1;
+        }
+    }
+
+    return low;
+}
+
 uint32_t msidb_database_num_tables(MsidbDatabase *database, MsidbError *err)
 {
     return database->tablestable.num_rows;
@@ -650,7 +712,8 @@ MsidbDatabase* msidb_database_open_storage(MsidbStorage *storage, const char *mo
     }
 
     {
-        int i;
+        int i, found;
+        uint32_t values[2], index;
         for (i=0; i<result->columnstable.num_rows; i++)
         {
             printf("%s %x %s %x\n",
@@ -658,6 +721,16 @@ MsidbDatabase* msidb_database_open_storage(MsidbStorage *storage, const char *mo
                 result->columnstable.data[i][1],
                 msidb_database_get_interned_string(result, result->columnstable.data[i][2], &found),
                 result->columnstable.data[i][3]);
+        }
+        values[1] = 0x8001;
+        for (i=0; i<result->tablestable.num_rows; i++)
+        {
+            values[0] = result->tablestable.data[i][0];
+            index = msidb_table_find_row(&result->columnstable, values, 2,
+                &found, NULL);
+            printf("%s %i %i\n",
+                msidb_database_get_interned_string(result, values[0], &found),
+                index, found);
         }
     }
 

@@ -83,19 +83,33 @@ char* msidb_table_value_to_string(MsidbTable *table, const uint32_t *values,
     uint32_t index, MsidbError *err);
 
 void msidb_table_value_from_string(MsidbTable *table, uint32_t *values,
-    uint32_t index, int create, int *found, MsidbError *err);
+    uint32_t index, const char *value, int create, int *found, MsidbError *err);
+
+int32_t msidb_table_value_to_int(MsidbTable *table, const uint32_t *values,
+    uint32_t index, MsidbError *err);
+
+void msidb_table_value_from_int(MsidbTable *table, uint32_t *values,
+    uint32_t index, int32_t value, MsidbError *err);
 
 MsidbStream* msidb_table_value_open_stream(MsidbTable *table,
     const uint32_t *values, uint32_t index, MsidbError *err);
+#endif
 
-uint32_t msidb_table_find_row(MsidbTable *table, uint32_t *values, int num_values,
-    int *found, MsidbError *err);
+uint32_t msidb_table_find_row(MsidbTable *table, const uint32_t *values,
+    int num_values, int *found, MsidbError *err);
 
+#if 0
 void msidb_table_update_row(MsidbTable *table, const uint32_t *values,
     int num_values, int create, int *found, MsidbError *err);
 
 void msidb_table_delete_row(MsidbTable *table, const uint32_t *values,
     int num_values, MsidbError *err);
+
+void msidb_table_update_row_by_index(MsidbTable *table, const uint32_t *values,
+    int num_values, uint32_t index, int create, int *found, MsidbError *err);
+
+void msidb_table_delete_row_by_index(MsidbTable *table, uint32_t index,
+    MsidbError *err);
 
 void msidb_table_export(MsidbTable *table, const char *filename,
     MsidbError *err);
