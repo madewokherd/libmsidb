@@ -76,12 +76,8 @@ char* msidb_table_get_column_type_string(MsidbTable *table, uint32_t index, Msid
 
 uint32_t msidb_table_get_num_rows(MsidbTable *table, MsidbError *err);
 
-/* Return non-zero to stop enumeration. */
-typedef int (*msidb_table_enum_rows_proc)(MsidbTable *table,
-    const int32_t *values, int num_values, void *user_data);
-
-int msidb_table_enum_rows(MsidbTable *table,
-    msidb_table_enum_rows_proc enum_func, void *user_data, MsidbError *err);
+void msidb_table_get_nth_row(MsidbTable *table, uint32_t index, uint32_t *values,
+    int num_values, MsidbError *err);
 
 char* msidb_table_value_to_string(MsidbTable *table, const uint32_t *values,
     uint32_t index, MsidbError *err);
@@ -92,7 +88,7 @@ void msidb_table_value_from_string(MsidbTable *table, uint32_t *values,
 MsidbStream* msidb_table_value_open_stream(MsidbTable *table,
     const uint32_t *values, uint32_t index, MsidbError *err);
 
-void msidb_table_find_row(MsidbTable *table, uint32_t *values, int num_values,
+uint32_t msidb_table_find_row(MsidbTable *table, uint32_t *values, int num_values,
     int *found, MsidbError *err);
 
 void msidb_table_update_row(MsidbTable *table, const uint32_t *values,

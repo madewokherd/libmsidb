@@ -66,9 +66,20 @@ typedef struct _StringTable {
 } StringTable;
 
 static const char tables_name[] = "_Tables";
-static const char table_colname[] = "Table";
-static const char *tables_columns[1] = {table_colname};
+static const char name_colname[] = "Name";
+static const char *tables_columns[1] = {name_colname};
 static uint32_t tables_types[1] = {MSIDB_COLTYPE_VALID | MSIDB_COLTYPE_STRING | MSIDB_COLTYPE_KEY | 64};
+
+static const char columns_name[] = "_Columns";
+static const char table_colname[] = "Table";
+static const char number_colname[] = "Number";
+static const char type_colname[] = "Type";
+static const char *columns_columns[4] = {table_colname, number_colname, name_colname, type_colname};
+static uint32_t columns_types[4] = {
+    MSIDB_COLTYPE_VALID | MSIDB_COLTYPE_STRING | MSIDB_COLTYPE_KEY | 64,
+    MSIDB_COLTYPE_VALID | MSIDB_COLTYPE_KEY | 2,
+    MSIDB_COLTYPE_VALID | MSIDB_COLTYPE_STRING | 64,
+    MSIDB_COLTYPE_VALID | 2};
 
 struct _MsidbTable {
     unsigned int ref;
@@ -91,6 +102,7 @@ struct _MsidbDatabase {
     MsidbStream *stringdata_stream;
     StringTable stringtable;
     MsidbTable tablestable;
+    MsidbTable columnstable;
 };
 
 static int16_t utf2mime(uint16_t x)
@@ -417,7 +429,7 @@ static int column_type_to_disksize(MsidbDatabase *database, uint32_t type)
     return -1; /* invalid type */
 }
 
-int msidb_table_row_size(MsidbTable *table, MsidbError *err)
+static int msidb_table_row_size(MsidbTable *table, MsidbError *err)
 {
     int result=0;
     int i, size;
@@ -436,7 +448,7 @@ int msidb_table_row_size(MsidbTable *table, MsidbError *err)
     return result;
 }
 
-void msidb_table_load_data(MsidbTable *table, MsidbError *err)
+static void msidb_table_load_data(MsidbTable *table, MsidbError *err)
 {
     int row_size;
     msidb_stat_t st;
@@ -466,57 +478,56 @@ void msidb_table_load_data(MsidbTable *table, MsidbError *err)
 
     if (table->num_rows)
     {
-        char *row_data;
         uint32_t **rows;
-        uint32_t *row;
         int i, j;
-        int column_offset;
+        int offset;
         int column_size;
-
-        row_data = malloc(row_size);
-        if (!row_data)
-        {
-            msidb_set_error(err, MSIDB_ERROR_OUTOFMEMORY, 0, NULL);
-            return;
-        }
 
         rows = malloc(table->num_rows * sizeof(*rows));
         if (!rows)
         {
-            free(row_data);
             msidb_set_error(err, MSIDB_ERROR_OUTOFMEMORY, 0, NULL);
             return;
         }
 
+        memset(rows, 0, table->num_rows * sizeof(*rows));
+
         for (i=0; i<table->num_rows; i++)
         {
-            msidb_stream_readat(table->stream, (uint64_t)i * row_size, row_data, row_size, err);
-            if (!msidb_check_error(err))
-                break;
-
-            row = malloc(sizeof(uint32_t) * table->num_columns);
-            if (!row)
+            rows[i] = malloc(sizeof(uint32_t) * table->num_columns);
+            if (!rows[i])
             {
                 msidb_set_error(err, MSIDB_ERROR_OUTOFMEMORY, 0, NULL);
                 break;
             }
-
-            column_offset = 0;
-            for (j=0; j<table->num_columns; j++)
-            {
-                column_size = column_type_to_disksize(table->parent, table->column_types[j]);
-                row[j] = read_uint(row_data + column_offset, column_size);
-                column_offset += column_size;
-            }
-
-            rows[i] = row;
         }
 
-        free(row_data);
+        if (msidb_check_error(err))
+        {
+            offset = 0;
+            for (j=0; j<table->num_columns; j++)
+            {
+                char value[4];
+
+                column_size = column_type_to_disksize(table->parent, table->column_types[j]);
+
+                for (i=0; i<table->num_rows; i++)
+                {
+                    msidb_stream_readat(table->stream, offset, value, column_size, err);
+                    if (!msidb_check_error(err))
+                        break;
+
+                    rows[i][j] = read_uint(value, column_size);
+
+                    offset += column_size;
+                }
+            }
+        }
+
 
         if (!msidb_check_error(err))
         {
-            for (j=0; j<i; j++)
+            for (j=0; j<table->num_rows; j++)
                 free(rows[j]);
             free(rows);
             return;
@@ -616,6 +627,38 @@ MsidbDatabase* msidb_database_open_storage(MsidbStorage *storage, const char *mo
         free_stringtable(&result->stringtable);
         free(result);
         return NULL;
+    }
+
+    memset(&result->columnstable, 0, sizeof(result->columnstable));
+    result->columnstable.parent = result;
+    result->columnstable.builtin = 1;
+    result->columnstable.table_name = columns_name;
+    result->columnstable.num_columns = 4;
+    result->columnstable.column_names = columns_columns;
+    result->columnstable.column_types = columns_types;
+    msidb_table_load_data(&result->columnstable, err);
+    if (!msidb_check_error(err))
+    {
+        free_msidb_table(&result->columnstable);
+        free_msidb_table(&result->tablestable);
+        msidb_storage_unref(result->storage);
+        msidb_stream_unref(stringpool);
+        msidb_stream_unref(stringdata);
+        free_stringtable(&result->stringtable);
+        free(result);
+        return NULL;
+    }
+
+    {
+        int i;
+        for (i=0; i<result->columnstable.num_rows; i++)
+        {
+            printf("%s %x %s %x\n",
+                msidb_database_get_interned_string(result, result->columnstable.data[i][0], &found),
+                result->columnstable.data[i][1],
+                msidb_database_get_interned_string(result, result->columnstable.data[i][2], &found),
+                result->columnstable.data[i][3]);
+        }
     }
 
     return result;
