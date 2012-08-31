@@ -27,6 +27,7 @@
 
 #include "msidb.h"
 #include "msidb-private.h"
+#include "ghash.h"
 
 struct known_codepage {
     uint32_t cp_constant;
@@ -63,6 +64,7 @@ typedef struct _StringTable {
     size_t entries_len;
     int strref_size;
     const char *codepage;
+    GHashTable *string_hash;
 } StringTable;
 
 static const char tables_name[] = "_Tables";
@@ -197,6 +199,10 @@ static void free_stringtable(StringTable *stringtable)
     for (i=0; i<stringtable->entries_len; i++)
         free(stringtable->entries[i].data);
     free(stringtable->entries);
+    if (stringtable->string_hash)
+    {
+        _msidb_hash_table_destroy(stringtable->string_hash);
+    }
 }
 
 static void read_stringtable(MsidbStream *stringpool, MsidbStream *stringdata, StringTable *stringtable, MsidbError *err)
@@ -360,6 +366,29 @@ static void read_stringtable(MsidbStream *stringpool, MsidbStream *stringdata, S
     free(dyn_output_buffer);
     iconv_close(cd);
 
+    if (msidb_check_error(err))
+    {
+        stringtable->string_hash = _msidb_hash_table_new(_msidb_str_hash, _msidb_str_equal);
+
+        if (stringtable->string_hash)
+        {
+            for (i=0; i<stringtable->entries_len; i++)
+            {
+                if (stringtable->entries[i].data)
+                {
+                    if (!_msidb_hash_table_insert_replace(stringtable->string_hash,
+                        stringtable->entries[i].data, (gpointer)(size_t)i, 0))
+                    {
+                        msidb_set_error(err, MSIDB_ERROR_OUTOFMEMORY, 0, NULL);
+                        break;
+                    }
+                }
+            }
+        }
+        else
+            msidb_set_error(err, MSIDB_ERROR_OUTOFMEMORY, 0, NULL);
+    }
+
     if (!msidb_check_error(err))
         free_stringtable(stringtable);
 }
@@ -374,6 +403,26 @@ const char *msidb_database_get_interned_string(MsidbDatabase *database,
 
     *found = database->stringtable.entries[id].data != NULL;
     return database->stringtable.entries[id].data;
+}
+
+uint32_t msidb_database_intern_string(MsidbDatabase *database, const char *value,
+    int create, int *found, MsidbError *err)
+{
+    uint32_t index;
+
+    *found = 0;
+
+    if (create)
+    {
+        msidb_set_error(err, MSIDB_ERROR_NOTIMPL, 0, "msidb_database_intern_string creation not implemented");
+        return 0;
+    }
+
+    index = (uint32_t)(uint64_t)_msidb_hash_table_lookup(database->stringtable.string_hash, value);
+
+    *found = index != 0;
+
+    return index;
 }
 
 static void free_msidb_table(MsidbTable *table)
@@ -571,7 +620,7 @@ uint32_t msidb_table_find_row(MsidbTable *table, const uint32_t *values,
         if (table->column_types[i] & MSIDB_COLTYPE_KEY)
         {
             msidb_set_error(err, MSIDB_ERROR_INVALIDARG, 0, "msidb_table_find_row called without values for all key columns");
-            return NULL;
+            return 0;
         }
     }
 
@@ -732,6 +781,10 @@ MsidbDatabase* msidb_database_open_storage(MsidbStorage *storage, const char *mo
                 msidb_database_get_interned_string(result, values[0], &found),
                 index, found);
         }
+        index = msidb_database_intern_string(result, "File", 0, &found, NULL);
+        printf("%s %i %i\n",
+            msidb_database_get_interned_string(result, index, &found),
+            index, found);
     }
 
     return result;

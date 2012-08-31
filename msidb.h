@@ -118,10 +118,10 @@ void msidb_table_export(MsidbTable *table, const char *filename,
 const char *msidb_database_get_interned_string(MsidbDatabase *database,
     uint32_t id, int *found);
 
-#if 0
 uint32_t msidb_database_intern_string(MsidbDatabase *database, const char *value,
     int create, int *found, MsidbError *err);
 
+#if 0
 void msidb_database_unref_interned_string(MsidbDatabase *database, uint32_t id,
     MsidbError *err);
 #endif
