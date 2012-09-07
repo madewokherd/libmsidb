@@ -48,6 +48,7 @@ const char* msidb_database_nth_table_name(MsidbDatabase *database, uint32_t inde
 MsidbStream* msidb_database_open_stream(MsidbDatabase *database, const char *name, int *found, MsidbError *err);
 
 MsidbStorage* msidb_database_get_storage_ref(MsidbDatabase *database);
+#endif
 
 MsidbTable* msidb_database_open_table(MsidbDatabase *database, const char *name, int *found, MsidbError *err);
 
@@ -55,6 +56,7 @@ void msidb_table_ref(MsidbTable *table);
 
 void msidb_table_unref(MsidbTable *table);
 
+#if 0
 uint32_t msidb_table_get_num_columns(MsidbTable *table, MsidbError *err);
 
 const char* msidb_table_get_column_name(MsidbTable *table, uint32_t index, MsidbError *err);
@@ -73,12 +75,14 @@ uint32_t msidb_table_get_column_type(MsidbTable *table, uint32_t index, MsidbErr
 
 #if 0 /* not yet implemented */
 char* msidb_table_get_column_type_string(MsidbTable *table, uint32_t index, MsidbError *err);
+#endif
 
 uint32_t msidb_table_get_num_rows(MsidbTable *table, MsidbError *err);
 
 void msidb_table_get_nth_row(MsidbTable *table, uint32_t index, uint32_t *values,
     int num_values, MsidbError *err);
 
+#if 0
 char* msidb_table_value_to_string(MsidbTable *table, const uint32_t *values,
     uint32_t index, MsidbError *err);
 
@@ -87,10 +91,12 @@ void msidb_table_value_from_string(MsidbTable *table, uint32_t *values,
 
 int32_t msidb_table_value_to_int(MsidbTable *table, const uint32_t *values,
     uint32_t index, MsidbError *err);
+#endif
 
 void msidb_table_value_from_int(MsidbTable *table, uint32_t *values,
     uint32_t index, int32_t value, MsidbError *err);
 
+#if 0
 MsidbStream* msidb_table_value_open_stream(MsidbTable *table,
     const uint32_t *values, uint32_t index, MsidbError *err);
 #endif

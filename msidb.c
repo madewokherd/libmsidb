@@ -648,6 +648,152 @@ uint32_t msidb_table_find_row(MsidbTable *table, const uint32_t *values,
     return low;
 }
 
+void msidb_table_value_from_int(MsidbTable *table, uint32_t *values,
+    uint32_t index, int32_t value, MsidbError *err)
+{
+    uint32_t column_type, size;
+
+    if (index >= table->num_columns)
+    {
+        msidb_set_error(err, MSIDB_ERROR_INVALIDARG, 0, "column index out of range");
+        return;
+    }
+
+    column_type = table->column_types[index];
+
+    if (column_type & MSIDB_COLTYPE_STRING)
+    {
+        msidb_set_error(err, MSIDB_ERROR_INVALIDARG, 0, "msidb_table_value_from_int called for non-numeric column");
+        return;
+    }
+
+    size = column_type_to_disksize(table->parent, column_type);
+
+    if (size == 2)
+        values[index] = (value & 0xffff) ^ 0x8000;
+    else
+        values[index] = value ^ 0x80000000;
+}
+
+uint32_t msidb_table_get_num_rows(MsidbTable *table, MsidbError *err)
+{
+    return table->num_rows;
+}
+
+void msidb_table_get_nth_row(MsidbTable *table, uint32_t index, uint32_t *values,
+    int num_values, MsidbError *err)
+{
+    if (index >= table->num_rows)
+    {
+        msidb_set_error(err, MSIDB_ERROR_INVALIDARG, 0, "row index out of range");
+        return;
+    }
+
+    if (num_values > table->num_columns)
+        num_values = table->num_columns;
+
+    memcpy(values, table->data[index], num_values * sizeof(*values));
+}
+
+MsidbTable* msidb_database_open_table(MsidbDatabase *database, const char *name,
+    int *found, MsidbError *err)
+{
+    uint32_t name_token;
+    uint32_t row[2];
+    uint32_t columns_start_index, columns_end_index;
+    int num_columns, i;
+    MsidbTable *result;
+    const char **column_names;
+    uint32_t *column_types;
+    int dummy;
+
+    name_token = msidb_database_intern_string(database, name, 0, found, err);
+    if (!*found)
+        return NULL;
+
+    row[0] = name_token;
+    msidb_table_find_row(&database->tablestable, row, 1, found, err);
+    if (!*found)
+        return NULL;
+
+    row[1] = 0x8001;
+
+    columns_start_index = msidb_table_find_row(&database->columnstable, row, 2, found, err);
+    if (!*found)
+    {
+        msidb_set_error(err, MSIDB_ERROR_INVALIDDATA, 0, "table has no first column in _Columns table");
+        *found = 0;
+        return NULL;
+    }
+
+    for (columns_end_index = columns_start_index+1; columns_end_index < database->columnstable.num_rows; columns_end_index++)
+    {
+        if (database->columnstable.data[columns_end_index][0] != name_token)
+            break;
+
+        if (database->columnstable.data[columns_end_index][1] != row[1] + columns_end_index - columns_start_index)
+        {
+            msidb_set_error(err, MSIDB_ERROR_INVALIDDATA, 0, "table skips some column numbers in _Columns table");
+            *found = 0;
+            return NULL;
+        }
+    }
+
+    num_columns = columns_end_index - columns_start_index;
+
+    result = malloc(sizeof(*result));
+    column_names = malloc(sizeof(*column_names) * num_columns);
+    column_types = malloc(sizeof(*column_types) * num_columns);
+    if (!result || !column_names || !column_types)
+    {
+        free(result);
+        free(column_names);
+        free(column_types);
+        msidb_set_error(err, MSIDB_ERROR_OUTOFMEMORY, 0, NULL);
+        *found = 0;
+        return NULL;
+    }
+
+    for (i=0; i<num_columns; i++)
+    {
+        column_names[i] = msidb_database_get_interned_string(database,
+            database->columnstable.data[columns_start_index+1][2], found);
+        if (!*found)
+        {
+            msidb_set_error(err, MSIDB_ERROR_INVALIDDATA, 0, "_Columns table contains an invalid string reference");
+            free(result);
+            free(column_names);
+            free(column_types);
+            return NULL;
+        }
+
+        column_types[i] = database->columnstable.data[columns_start_index+1][3] ^ 0x8000;
+    }
+
+    memset(result, 0, sizeof(*result));
+
+    result->ref = 1;
+    result->parent = database;
+    result->builtin = 0;
+    result->table_name = msidb_database_get_interned_string(database, name_token, &dummy);
+    result->num_columns = num_columns;
+    result->column_names = column_names;
+    result->column_types = column_types;
+
+    msidb_table_load_data(result, err);
+
+    if (!msidb_check_error(err))
+    {
+        free(result);
+        free(column_names);
+        free(column_types);
+        return NULL;
+    }
+
+    msidb_database_ref(database);
+    return result;
+}
+
 uint32_t msidb_database_num_tables(MsidbDatabase *database, MsidbError *err)
 {
     return database->tablestable.num_rows;
@@ -758,33 +904,6 @@ MsidbDatabase* msidb_database_open_storage(MsidbStorage *storage, const char *mo
         free_stringtable(&result->stringtable);
         free(result);
         return NULL;
-    }
-
-    {
-        int i, found;
-        uint32_t values[2], index;
-        for (i=0; i<result->columnstable.num_rows; i++)
-        {
-            printf("%s %x %s %x\n",
-                msidb_database_get_interned_string(result, result->columnstable.data[i][0], &found),
-                result->columnstable.data[i][1],
-                msidb_database_get_interned_string(result, result->columnstable.data[i][2], &found),
-                result->columnstable.data[i][3]);
-        }
-        values[1] = 0x8001;
-        for (i=0; i<result->tablestable.num_rows; i++)
-        {
-            values[0] = result->tablestable.data[i][0];
-            index = msidb_table_find_row(&result->columnstable, values, 2,
-                &found, NULL);
-            printf("%s %i %i\n",
-                msidb_database_get_interned_string(result, values[0], &found),
-                index, found);
-        }
-        index = msidb_database_intern_string(result, "File", 0, &found, NULL);
-        printf("%s %i %i\n",
-            msidb_database_get_interned_string(result, index, &found),
-            index, found);
     }
 
     return result;
