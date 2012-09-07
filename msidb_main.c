@@ -28,8 +28,8 @@ int usage(void)
 {
     printf("msidb -e filename [tables]\n");
     printf("    Export the tables from an msi database.\n\n");
-    printf("msidb -p filename\n");
-    printf("    Dump the property table from the database.\n\n");
+    printf("msidb -p filename [property]\n");
+    printf("    Dump the property table, or a single property if specified, from the database.\n\n");
     return 5;
 }
 
@@ -68,36 +68,71 @@ int dump_property_table(int argc, char** argv)
 
     if (found)
     {
-        uint32_t i, num_rows;
         uint32_t values[2];
+        uint32_t i;
         const char *str;
 
-        num_rows = msidb_table_get_num_rows(table, NULL);
-
-        for (i=0; i<num_rows; i++)
+        if (argc == 3)
         {
-            /* FIXME: assuming two string value columns */
-            msidb_table_get_nth_row(table, i, values, 2, NULL);
+            uint32_t num_rows;
 
-            str = msidb_database_get_interned_string(database, values[0], &found);
+            num_rows = msidb_table_get_num_rows(table, NULL);
+
+            for (i=0; i<num_rows; i++)
+            {
+                /* FIXME: assuming two string value columns */
+                msidb_table_get_nth_row(table, i, values, 2, NULL);
+
+                str = msidb_database_get_interned_string(database, values[0], &found);
+
+                if (!found)
+                {
+                    printf("Invalid string reference in Property table. Aborting!\n");
+                    return 6;
+                }
+
+                printf("%s\t", str);
+
+                str = msidb_database_get_interned_string(database, values[1], &found);
+
+                if (!found)
+                {
+                    printf("Invalid string reference in Property table. Aborting!\n");
+                    return 7;
+                }
+
+                printf("%s\n", str);
+            }
+        }
+        else
+        {
+            values[0] = msidb_database_intern_string(database, argv[3], 0, &found, NULL);
+
+            if (found)
+            {
+                i = msidb_table_find_row(table, values, 1, &found, NULL);
+
+                if (found)
+                {
+                    msidb_table_get_nth_row(table, i, values, 2, NULL);
+
+                    str = msidb_database_get_interned_string(database, values[1], &found);
+
+                    if (!found)
+                    {
+                        printf("Invalid string reference in Property table. Aborting!\n");
+                        return 8;
+                    }
+
+                    printf("%s", str);
+                }
+            }
 
             if (!found)
             {
-                printf("Invalid string reference in Property table. Aborting!\n");
-                return 6;
+                printf("Property not found\n");
+                return 9;
             }
-
-            printf("%s\t", str);
-
-            str = msidb_database_get_interned_string(database, values[1], &found);
-
-            if (!found)
-            {
-                printf("Invalid string reference in Property table. Aborting!\n");
-                return 7;
-            }
-
-            printf("%s\n", str);
         }
 
         msidb_table_unref(table);

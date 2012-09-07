@@ -757,7 +757,7 @@ MsidbTable* msidb_database_open_table(MsidbDatabase *database, const char *name,
     for (i=0; i<num_columns; i++)
     {
         column_names[i] = msidb_database_get_interned_string(database,
-            database->columnstable.data[columns_start_index+1][2], found);
+            database->columnstable.data[columns_start_index+i][2], found);
         if (!*found)
         {
             msidb_set_error(err, MSIDB_ERROR_INVALIDDATA, 0, "_Columns table contains an invalid string reference");
@@ -767,7 +767,7 @@ MsidbTable* msidb_database_open_table(MsidbDatabase *database, const char *name,
             return NULL;
         }
 
-        column_types[i] = database->columnstable.data[columns_start_index+1][3] ^ 0x8000;
+        column_types[i] = database->columnstable.data[columns_start_index+i][3] ^ 0x8000;
     }
 
     memset(result, 0, sizeof(*result));
